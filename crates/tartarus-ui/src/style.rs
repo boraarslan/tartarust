@@ -949,6 +949,31 @@ body {
   font-family: var(--mono); font-size: 13px; font-weight: 600;
 }
 
+/* Calibration multi-select: caps in the selection set get an accent ring (drag
+   or Shift+click). Distinct from the single `.selected` glow. */
+.keycap.multi, .spacebar.multi {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent), 0 0 12px var(--accent-glow);
+}
+
+/* Bulk actuation editor — a centred floating dialog (targets many caps, so it
+   isn't cap-anchored like .cal-modal) over its own dimming backdrop. */
+.multi-backdrop {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(5,6,7,0.62);
+  backdrop-filter: blur(1.5px);
+}
+.multi-modal {
+  position: fixed; z-index: 81;
+  top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 320px; max-width: calc(100vw - 48px);
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 50px rgba(0,0,0,0.65);
+  padding: 18px;
+}
+
 /* ----- Profiles page ------------------------------------------------------ */
 .profile-toolbar {
   display: flex; align-items: center; gap: 14px;

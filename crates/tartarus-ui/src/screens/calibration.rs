@@ -23,14 +23,14 @@
 //! Offline (no daemon — the cage harness) or in digital mode there are no live
 //! bars; each non-editor state renders an intentional message, not dead sliders.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use dioxus::prelude::*;
 
 use tartarus_ipc::{AnalogKeyConfig, AnalogState};
 
-use crate::components::{KeyPicker, Keypad, KeypadMode, Slider, Toggle};
+use crate::components::{CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, Slider, Toggle};
 use crate::model::{pretty_key, KeyId};
 use crate::use_store;
 
@@ -100,6 +100,13 @@ pub fn Calibration() -> Element {
 fn Stage(state: Option<AnalogState>) -> Element {
     let mut store = use_store();
 
+    // Multi-select state (screen-local; separate from the global single
+    // `store.selected`). `multi` is the selected set; `dragging` gates the
+    // drag-extend; `multi_open` shows the bulk editor.
+    let mut multi = use_signal(BTreeSet::<KeyId>::new);
+    let mut dragging = use_signal(|| false);
+    let mut multi_open = use_signal(|| false);
+
     let keys = state.as_ref().map(|s| s.keys.clone()).unwrap_or_default();
     let frame = state.as_ref().map(|s| s.pressures.clone()).unwrap_or_default();
 
@@ -132,9 +139,60 @@ fn Stage(state: Option<AnalogState>) -> Element {
             Some((cfg, opens_left(sel)))
         });
 
+    // Resolve the multi-selection to the analog configs we can bulk-edit (caps
+    // with no analog config — e.g. an unmapped key — are silently skipped).
+    let multi_cfgs: Vec<AnalogKeyConfig> = multi()
+        .iter()
+        .filter_map(|k| {
+            let name = k.evdev()?;
+            keys.iter().find(|c| c.key == name).cloned()
+        })
+        .collect();
+    let show_multi = multi_open() && !multi_cfgs.is_empty();
+
+    // Cap pointer handler: a plain click single-selects (the cap-anchored editor);
+    // a drag across >1 cap, or Shift+clicks, build the multi set; the bulk editor
+    // opens on drag-end (>1 caps) or on Shift release (the stage's onkeyup below).
+    let pointer = EventHandler::new(move |p: CapPointer| match p.phase {
+        CapPhase::Down => {
+            if p.shift {
+                // Shift+click: accumulate silently; the editor waits for release.
+                multi.write().insert(p.key);
+                multi_open.set(false);
+                store.write().selected = None;
+            } else {
+                // Begin a drag (also covers a plain click = a drag of one cap).
+                dragging.set(true);
+                multi_open.set(false);
+                multi.set(BTreeSet::from([p.key]));
+            }
+        }
+        CapPhase::Enter => {
+            if *dragging.peek() {
+                multi.write().insert(p.key);
+            }
+        }
+        CapPhase::Up => {
+            if *dragging.peek() {
+                dragging.set(false);
+                let set = multi.peek().clone();
+                if set.len() > 1 {
+                    multi_open.set(true); // a real multi-key drag → bulk editor
+                    store.write().selected = None;
+                } else {
+                    // A single click: fall back to the normal single-key editor.
+                    multi.write().clear();
+                    if let Some(&k) = set.iter().next() {
+                        store.write().selected = Some(k);
+                    }
+                }
+            }
+        }
+    });
+
     rsx! {
         // The dim/dismiss layer (z-index:40). Clicking outside the stage clears
-        // the selection. Only present while a tunable key is open.
+        // the selection. Only present while a single-key tunable is open.
         if selected_cfg.is_some() {
             Backdrop {}
         }
@@ -146,19 +204,35 @@ fn Stage(state: Option<AnalogState>) -> Element {
         // INSIDE the selected cap (each cap is position:relative), so it floats
         // beside whichever cap was clicked — consistent from the first render,
         // with no row/column math that the 5/5/5/4 layout would break.
+        //
+        // `tabindex` lets the stage receive key events: releasing Shift after a
+        // run of Shift+clicks opens the bulk editor (onkeyup).
         div {
             class: "stage",
+            tabindex: "0",
             style: "position:relative; z-index:51;",
-            // Click the bare stage (anywhere but a cap or the modal) to close the
-            // editor. Caps and the CalModal stop propagation, so only background
-            // clicks reach here.
-            onclick: move |_| store.write().selected = None,
+            // Click the bare stage (anywhere but a cap or a modal) to clear both
+            // the single selection and any multi-selection. Caps + modals stop
+            // propagation, so only true background clicks reach here.
+            onclick: move |_| {
+                store.write().selected = None;
+                multi.write().clear();
+                multi_open.set(false);
+            },
+            onkeyup: move |e: KeyboardEvent| {
+                if e.key() == Key::Shift && !*dragging.peek() && !multi.peek().is_empty() {
+                    multi_open.set(true);
+                    store.write().selected = None;
+                }
+            },
             Keypad {
                 mode: KeypadMode::Pressure,
                 // Only the analog caps (19 main keys + spacebar) are calibratable,
                 // so the 8-way pad, scroll wheel, and thumb button are hidden here.
                 analog_only: true,
                 pressures: Some(pressures),
+                on_cap_pointer: Some(pointer),
+                multi_selected: multi(),
                 if let Some((cfg, open_left)) = selected_cfg {
                     CalModal {
                         // CalModal re-seeds its sliders internally when the byte
@@ -170,6 +244,110 @@ fn Stage(state: Option<AnalogState>) -> Element {
                         open_left,
                     }
                 }
+            }
+
+            // Bulk actuation editor for a multi-selection (drag or Shift+click).
+            // Only actuation/release — never second functions — and it preserves
+            // each key's own dual-step. Toggling `show_multi` remounts it, so it
+            // always re-seeds for the current selection.
+            if show_multi {
+                MultiCalModal {
+                    cfgs: multi_cfgs.clone(),
+                    on_close: move |_| {
+                        multi.write().clear();
+                        multi_open.set(false);
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Bulk actuation editor for a multi-selection: actuation + release points only
+/// (no dual-step / second action, per the multi-edit spec), applied to EVERY
+/// selected analog key at once. Each key keeps its own existing second function —
+/// we forward `second_*` untouched, so a bulk threshold change never wipes a
+/// per-key dual-step. A floating, centred dialog (not cap-anchored, since it
+/// targets many caps), with its own dimming backdrop.
+#[component]
+fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Element {
+    let store = use_store();
+    let count = cfgs.len();
+    // Seed the sliders from the first selected key; editing then writes all.
+    let seed_act = cfgs.first().map(|c| c.actuation_point).unwrap_or(0x60);
+    let seed_rel = cfgs.first().map(|c| c.release_point).unwrap_or(0x50);
+    let cfgs = use_signal(|| cfgs);
+    let mut actuation = use_signal(|| seed_act);
+    let mut release = use_signal(|| seed_rel);
+
+    // Push the current actuation/release to every selected analog key, preserving
+    // each key's own dual-step (`second_*` forwarded verbatim). All captures are
+    // Copy (signals), so this closure is reusable across both sliders.
+    let push = move || {
+        let act = actuation();
+        let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
+        for c in cfgs.read().iter() {
+            crate::ipc::set_actuation(
+                store,
+                c.index,
+                act,
+                rel,
+                c.second_actuation_point,
+                c.second_action.clone(),
+            );
+        }
+    };
+
+    let act_v = actuation();
+    let rel_v = release();
+    let pct100 = |v: u8| (v as u16 * 100 / 255) as u8;
+    let names: String = cfgs
+        .read()
+        .iter()
+        .map(|c| pretty_key(&c.key))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    rsx! {
+        div { class: "multi-backdrop", onclick: move |_| on_close.call(()) }
+        div {
+            class: "multi-modal",
+            onclick: move |e| e.stop_propagation(),
+            div { class: "cal-modal-head",
+                span { "{count} keys · bulk actuation" }
+                span { class: "link-x", onclick: move |_| on_close.call(()), "×" }
+            }
+            div { class: "field-value", style: "color:var(--text-mute);margin-bottom:12px;", "{names}" }
+
+            Slider {
+                label: "Actuation point".to_string(),
+                value: act_v as f64,
+                min: 1.0, max: 255.0, step: 1.0,
+                readout: format!("{act_v} ({}%)", pct100(act_v)),
+                on_input: move |v: f64| {
+                    let nv = v as u8;
+                    actuation.set(nv);
+                    if release() >= nv {
+                        release.set(nv.saturating_sub(1));
+                    }
+                    push();
+                },
+            }
+
+            Slider {
+                label: "Release point".to_string(),
+                value: rel_v as f64,
+                min: 0.0, max: 254.0, step: 1.0,
+                readout: format!("{rel_v} ({}%)", pct100(rel_v)),
+                on_input: move |v: f64| {
+                    let nv = (v as u8).min(actuation().saturating_sub(1));
+                    release.set(nv);
+                    push();
+                },
+            }
+
+            div { class: "field-value", style: "color:var(--text-mute);margin-top:12px;",
+                "Sets actuation & release for all selected keys at once. Each key keeps its own second function."
             }
         }
     }

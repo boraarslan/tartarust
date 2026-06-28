@@ -14,7 +14,7 @@
 //!     keypad renders it INSIDE the selected cap (each cap is `position:relative`)
 //!     so the popover anchors to whichever cap was clicked, at any scale.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use dioxus::prelude::*;
 
@@ -35,6 +35,31 @@ pub enum KeypadMode {
     Pressure,
 }
 
+/// One phase of a cap pointer interaction, for Calibration's drag/shift
+/// multi-select.
+#[derive(Clone, Copy, PartialEq)]
+pub enum CapPhase {
+    /// Mouse button pressed on the cap (drag start / shift-click).
+    Down,
+    /// Mouse entered the cap (extends an in-progress drag).
+    Enter,
+    /// Mouse released on the cap (drag end).
+    Up,
+}
+
+/// A cap pointer event surfaced to the host screen (Calibration) so it can drive
+/// drag-to-select and shift-click multi-select. Carries which cap, the phase, and
+/// whether Shift was held.
+#[derive(Clone, Copy, PartialEq)]
+pub struct CapPointer {
+    /// The cap the pointer is on.
+    pub key: KeyId,
+    /// The interaction phase.
+    pub phase: CapPhase,
+    /// Whether Shift was held at the time.
+    pub shift: bool,
+}
+
 #[component]
 pub fn Keypad(
     mode: KeypadMode,
@@ -53,6 +78,15 @@ pub fn Keypad(
     /// and thumb-button caps from the bottom. The 8-way pad and wheel never carry
     /// pressure.
     pressures: Option<HashMap<String, u8>>,
+    /// Calibration multi-select: pointer events per analog cap. When `Some`, a
+    /// cap's normal single-select click is suppressed and Down/Enter/Up pointer
+    /// events (with Shift state) are forwarded here instead, so the screen can
+    /// drive drag- and shift-click selection.
+    #[props(default = None)]
+    on_cap_pointer: Option<EventHandler<CapPointer>>,
+    /// Caps currently in the multi-selection set (Calibration); highlighted.
+    #[props(default = BTreeSet::new())]
+    multi_selected: BTreeSet<KeyId>,
     /// Optional overlay (Calibration's actuation editor) rendered INSIDE the
     /// currently-selected cap so it floats beside the clicked key.
     children: Element,
@@ -85,7 +119,8 @@ pub fn Keypad(
                                 let key_id = KeyId::Grid(start + c as u8);
                                 let press = press_of(key_id);
                                 let modal = if host(key_id) { children.clone() } else { rsx! {} };
-                                rsx! { Cap { key_id, mode, layer, press, modal } }
+                                let multi = multi_selected.contains(&key_id);
+                                rsx! { Cap { key_id, mode, layer, press, modal, on_cap_pointer, multi } }
                             }
                         }
                     }
@@ -100,7 +135,10 @@ pub fn Keypad(
                     Thumbpad { mode, layer }
                     Wheel { mode, layer }
                 }
-                Space { mode, layer, press: space_press, modal: space_modal }
+                Space {
+                    mode, layer, press: space_press, modal: space_modal,
+                    on_cap_pointer, multi: multi_selected.contains(&KeyId::Space),
+                }
                 if !analog_only {
                     ThumbButton { mode, layer, press: thumb_btn_press, modal: thumb_btn_modal }
                 }
@@ -142,6 +180,8 @@ fn Cap(
     layer: Layer,
     press: Option<u8>,
     modal: Element,
+    #[props(default = None)] on_cap_pointer: Option<EventHandler<CapPointer>>,
+    #[props(default = false)] multi: bool,
 ) -> Element {
     let mut store = use_store();
     let s = store.read();
@@ -150,6 +190,9 @@ fn Cap(
     let mut classes = String::from("keycap");
     if selected {
         classes.push_str(" selected");
+    }
+    if multi {
+        classes.push_str(" multi");
     }
 
     // Mode-specific cap content + styling. In Bind mode the cap shows a readable
@@ -186,14 +229,37 @@ fn Cap(
             style: "{style}",
             onclick: move |e| {
                 e.stop_propagation();
-                select(&mut store, key_id, mode, layer);
+                // When the host drives multi-select (Calibration), the pointer
+                // handlers below own selection — a plain click is resolved there.
+                if on_cap_pointer.is_none() {
+                    select(&mut store, key_id, mode, layer);
+                }
             },
+            onmousedown: move |e| cap_pointer(&on_cap_pointer, key_id, CapPhase::Down, &e),
+            onmouseenter: move |e| cap_pointer(&on_cap_pointer, key_id, CapPhase::Enter, &e),
+            onmouseup: move |e| cap_pointer(&on_cap_pointer, key_id, CapPhase::Up, &e),
             span { class: "cap-legend", "{legend}" }
             if !tag.is_empty() {
                 span { class: "cap-func", "{tag}" }
             }
             {modal}
         }
+    }
+}
+
+/// Forward a cap pointer event to the host's multi-select handler, if any.
+fn cap_pointer(
+    handler: &Option<EventHandler<CapPointer>>,
+    key: KeyId,
+    phase: CapPhase,
+    e: &Event<MouseData>,
+) {
+    if let Some(h) = handler {
+        h.call(CapPointer {
+            key,
+            phase,
+            shift: e.modifiers().contains(Modifiers::SHIFT),
+        });
     }
 }
 
@@ -343,13 +409,23 @@ fn Wheel(mode: KeypadMode, layer: Layer) -> Element {
 }
 
 #[component]
-fn Space(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element) -> Element {
+fn Space(
+    mode: KeypadMode,
+    layer: Layer,
+    press: Option<u8>,
+    modal: Element,
+    #[props(default = None)] on_cap_pointer: Option<EventHandler<CapPointer>>,
+    #[props(default = false)] multi: bool,
+) -> Element {
     let mut store = use_store();
     let s = store.read();
     let selected = is_selected(&s, KeyId::Space, mode, layer);
     let mut classes = String::from("spacebar");
     if selected {
         classes.push_str(" selected");
+    }
+    if multi {
+        classes.push_str(" multi");
     }
     let mut style = if mode == KeypadMode::Lighting {
         let c = lit_color(&s, KeyId::Space);
@@ -368,8 +444,13 @@ fn Space(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element) -> E
             style: "{style}",
             onclick: move |e| {
                 e.stop_propagation();
-                select(&mut store, KeyId::Space, mode, layer);
+                if on_cap_pointer.is_none() {
+                    select(&mut store, KeyId::Space, mode, layer);
+                }
             },
+            onmousedown: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Down, &e),
+            onmouseenter: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Enter, &e),
+            onmouseup: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Up, &e),
             "THUMB · SPACE"
             {modal}
         }
