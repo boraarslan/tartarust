@@ -1,0 +1,22 @@
+[package]
+name = "tartarus-cli"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Command-line client for the Tartarus Pro daemon (scriptable control + diagnostics)."
+
+[[bin]]
+name = "tartarus"
+path = "src/main.rs"
+
+[dependencies]
+tartarus-ipc = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true

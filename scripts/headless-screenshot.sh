@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# headless-screenshot.sh <binary> [args...]
+#
+# Runs <binary> under a HEADLESS `cage` compositor (wlroots headless backend),
+# waits for it to render, captures a PNG via `grim`, then tears everything down.
+# It NEVER touches the user's physical monitors or live Wayland session — the
+# headless backend has no DRM/output path to real displays.
+#
+# This is the ONLY sanctioned way to run the rusty-tartarus UI during dev.
+# Do NOT run `dx serve` / the UI binary bare — that inherits the real Wayland
+# session and pops a window on the user's screen.
+#
+# Env knobs:
+#   HEADLESS_OUTPUT   output PNG path        (default: ./screenshots/ui.png)
+#   SETTLE_SECS       wait before screenshot (default: 3)
+#   CAGE_TIMEOUT      hard kill after N secs (default: 30)
+#
+# Requires: cage, grim. Sources: docs/research/04-dioxus-and-headless.md
+set -euo pipefail
+
+BINARY="${1:?Usage: $0 <binary> [args...]}"
+shift
+BINARY_ARGS=("$@")
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUTPUT_PNG="${HEADLESS_OUTPUT:-$REPO_ROOT/screenshots/ui.png}"
+SETTLE_SECS="${SETTLE_SECS:-3}"
+CAGE_TIMEOUT="${CAGE_TIMEOUT:-30}"
+
+mkdir -p "$(dirname "$OUTPUT_PNG")"
+
+# --- wlroots: pure virtual, software-rendered (no GPU/DRM needed) ------------
+export WLR_BACKENDS=headless
+export WLR_HEADLESS_OUTPUTS=1
+export WLR_RENDERER=pixman
+export WLR_RENDERER_ALLOW_SOFTWARE=1
+export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-noop}"   # no real seat in headless
+
+# --- Wayland session isolation ----------------------------------------------
+# cage picks its own socket via wl_display_add_socket_auto() and overwrites
+# WAYLAND_DISPLAY for its children. Unset ours so the child never briefly sees
+# the live-session socket. Isolation is guaranteed by WLR_BACKENDS=headless.
+unset WAYLAND_DISPLAY || true
+
+# libwayland requires XDG_RUNTIME_DIR to be mode 0700; make a private one.
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-}"
+CLEAN_RUNTIME=0
+if [ -z "$RUNTIME_DIR" ] || [ "$RUNTIME_DIR" = "/tmp" ]; then
+    RUNTIME_DIR="$(mktemp -d)"
+    chmod 700 "$RUNTIME_DIR"
+    CLEAN_RUNTIME=1
+fi
+export XDG_RUNTIME_DIR="$RUNTIME_DIR"
+export XDG_SESSION_TYPE=wayland
+
+# --- GTK / webkit2gtk: force Wayland + software compositing ------------------
+export GDK_BACKEND=wayland
+export WEBKIT_DISABLE_COMPOSITING_MODE=1
+export WEBKIT_DISABLE_DMABUF_RENDERER=1
+export WEBKIT_DISABLE_SANDBOX=1            # nested compositor has no DRM for sandbox
+export LIBGL_ALWAYS_SOFTWARE=1
+
+cleanup() {
+    [ "$CLEAN_RUNTIME" = "1" ] && rm -rf "$RUNTIME_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Inner kiosk command cage runs; cage exits when it returns.
+INNER_SCRIPT="$(cat <<'INNER'
+set -eu
+cleanup() { kill "$(jobs -p)" 2>/dev/null || true; }
+trap cleanup EXIT INT TERM
+
+APP_BIN="$1"; shift
+OUTPUT_FILE="$1"; shift
+SETTLE="$1"; shift
+
+"$APP_BIN" "$@" &
+APP_PID=$!
+
+sleep "$SETTLE"
+grim "$OUTPUT_FILE" && echo "[headless] screenshot saved: $OUTPUT_FILE"
+
+kill "$APP_PID" 2>/dev/null || true
+wait "$APP_PID" 2>/dev/null || true
+INNER
+)"
+
+echo "[headless] launching '$BINARY' under headless cage (timeout ${CAGE_TIMEOUT}s)…"
+timeout --signal=TERM "$CAGE_TIMEOUT" \
+    cage -- bash -c "$INNER_SCRIPT" -- \
+        "$BINARY" "$OUTPUT_PNG" "$SETTLE_SECS" "${BINARY_ARGS[@]+"${BINARY_ARGS[@]}"}"
+
+if [ -s "$OUTPUT_PNG" ]; then
+    echo "[headless] OK — $(file -b "$OUTPUT_PNG")"
+else
+    echo "[headless] FAILED — no screenshot produced" >&2
+    exit 1
+fi

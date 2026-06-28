@@ -1,0 +1,17 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Dioxus / dx build cache + bundles
+/.dx
+**/dist
+
+# Headless debug screenshots
+/screenshots
+*.debug.png
+
+# Editor / OS
+.idea
+.vscode
+*.swp
+.DS_Store

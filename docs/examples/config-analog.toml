@@ -1,0 +1,91 @@
+# rusty-tartarus — ANALOG test config (generated 2026-06-22 from the user's
+# analog_map + discover-keys runs on this unit). Runs the keypad in ANALOG mode:
+# the daemon enters driver mode, reads per-key pressure, and fires each key at
+# its actuation point — so the 20 grid keys become analog.
+#
+#   cp docs/examples/config-analog.toml ~/.config/rusty-tartarus/config.toml
+#   cargo run --release -p tartarus-daemon -- run     # Ctrl-C restores normal mode
+#
+# What to try (focus a text editor first):
+#   * Press grid keys with a LIGHT touch -> nothing; press past ~halfway -> they
+#     type. That gap is the analog actuation point (digital keys can't do this).
+#   * The W-position key -> Up arrow (a remap, applied on top of analog).
+#   * The "1" key -> types "hi" (a macro).
+#   * The S key: light press = "s", HARD press = "S" (dual-step second action).
+
+default_profile = "default"
+auto_switch = false
+input_mode = "analog"
+
+[profiles.default]
+name = "default"
+
+[profiles.default.lighting]
+brightness = 255
+effect = { effect = "spectrum" }
+
+# Demo remaps. Any analog key WITHOUT a bind here passes through (types itself).
+[profiles.default.base]
+KEY_W = { type = "key", keys = ["KEY_UP"] }   # W-position key -> Up arrow
+KEY_1 = { type = "macro", name = "demo" }     # "1" key -> types "hi"
+
+[macros.demo]
+name = "demo"
+steps = [
+  { step = "press", key = "KEY_H" }, { step = "release", key = "KEY_H" },
+  { step = "press", key = "KEY_I" }, { step = "release", key = "KEY_I" },
+]
+
+# ===========================================================================
+# ANALOG MAP — byte index -> physical key, for THIS unit (from your runs).
+# Per-key actuation defaults to 0x60 (fire) / 0x50 (release) unless set below.
+# ===========================================================================
+[analog]
+poll_interval_ms = 50
+
+[analog.keys.0]
+key = "KEY_1"
+[analog.keys.1]
+key = "KEY_2"
+[analog.keys.2]
+key = "KEY_3"
+[analog.keys.3]
+key = "KEY_4"
+[analog.keys.4]
+key = "KEY_5"
+[analog.keys.5]
+key = "KEY_TAB"
+[analog.keys.6]
+key = "KEY_Q"
+[analog.keys.7]
+key = "KEY_W"
+[analog.keys.8]
+key = "KEY_E"
+[analog.keys.9]
+key = "KEY_R"
+[analog.keys.10]
+key = "KEY_CAPSLOCK"
+[analog.keys.11]
+key = "KEY_A"
+
+# Dual-step demo: light press emits KEY_S ("s"); a hard press (past 0xC0) also
+# emits KEY_LEFTSHIFT, so a deep press types "S".
+[analog.keys.12]
+key = "KEY_S"
+second_actuation_point = 0xC0
+second_action = "KEY_LEFTSHIFT"
+
+[analog.keys.13]
+key = "KEY_D"
+[analog.keys.14]
+key = "KEY_F"
+[analog.keys.15]
+key = "KEY_LEFTSHIFT"
+[analog.keys.16]
+key = "KEY_Z"
+[analog.keys.17]
+key = "KEY_X"
+[analog.keys.18]
+key = "KEY_C"
+[analog.keys.19]
+key = "BTN_MIDDLE"

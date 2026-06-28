@@ -1,0 +1,47 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/tartarus-protocol",
+    "crates/tartarus-hid",
+    "crates/tartarus-ipc",
+    "crates/tartarus-daemon",
+    "crates/tartarus-cli",
+    "crates/tartarus-ui",
+]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+authors = ["bora.rs <bora.rs@pm.me>"]
+rust-version = "1.95"
+repository = ""
+
+# Shared dependency palette. Member crates opt in with `dep = { workspace = true }`
+# so versions stay aligned across the workspace. Versions for device/UI-specific
+# crates (deku, evdev, hidapi, dioxus) are pinned as each milestone lands and the
+# research docs (docs/research/) confirm current versions.
+[workspace.dependencies]
+# error handling / logging
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# serialization / IPC
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# async runtime (daemon)
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
+# internal crates
+tartarus-protocol = { path = "crates/tartarus-protocol" }
+tartarus-hid = { path = "crates/tartarus-hid" }
+tartarus-ipc = { path = "crates/tartarus-ipc" }
+
+[workspace.lints.rust]
+unused_must_use = "warn"
+
+[workspace.lints.clippy]
+uninlined_format_args = "allow"
+
+[profile.release]
+lto = "thin"
+strip = true

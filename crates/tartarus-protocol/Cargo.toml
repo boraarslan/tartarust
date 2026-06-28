@@ -1,0 +1,16 @@
+[package]
+name = "tartarus-protocol"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Razer Tartarus Pro (USB 1532:0244) wire protocol: 90-byte report + command set."
+
+[dependencies]
+deku = "0.20.3"
+thiserror = { workspace = true }
+# deku = "..."   # added in M1/M2 once docs/research/05-deku.md confirms the current version
+
+[lints]
+workspace = true

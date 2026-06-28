@@ -1,0 +1,171 @@
+# Example rusty-tartarus config.
+#
+# Install to: $XDG_CONFIG_HOME/rusty-tartarus/config.toml
+#         or: ~/.config/rusty-tartarus/config.toml
+#
+# This is the daemon's persisted state: profiles (each with base + Hypershift
+# binds and its own lighting), plus named macros. The daemon rewrites this file
+# when you change settings over IPC (e.g. from the UI or `tartarus` CLI), so
+# comments you add by hand are lost on the next write — stop the daemon before
+# editing by hand if you want to keep them.
+#
+# Key names are evdev names. Run `tartarus discover-keys`, press each physical
+# key on the keypad, and paste the printed KEY_* / BTN_* names below. The names
+# here (KEY_1, KEY_Q, ...) are placeholders — confirm the real ones for your unit.
+
+# The Hypershift (secondary) layer is triggered by binding a key to
+# { type = "hypershift" } in a profile's base layer (see KEY_LEFTALT below).
+# The trigger is therefore per-profile.
+
+# Profile active at startup; must be a key under [profiles].
+default_profile = "default"
+
+# Per-application auto-switch: when on (default), focusing a window whose app
+# class matches a profile's `linked_app` activates that profile. Find a window's
+# class with `hyprctl activewindow` (Hyprland) or `xprop WM_CLASS` (X11), e.g.
+# "brave-browser", "code", "discord". Set to false to disable entirely.
+auto_switch = true
+
+# Input mode: how the daemon reads the keypad.
+#   "digital" (default) — grab the normal HID keyboard nodes and remap keystrokes
+#                         (the proven path; works on any unit).
+#   "analog"            — put the device in DRIVER mode and derive key-down/up
+#                         from raw per-key optical PRESSURE. Unlocks adjustable
+#                         actuation points and dual-step ("second function") keys.
+# The two are mutually exclusive: DRIVER mode disables the normal HID keyboard,
+# so analog REPLACES the grab. Binds, Hypershift, macros, and profiles all work
+# identically on top of either mode. Leave this on "digital" unless you have
+# filled in the [analog] map below for your unit.
+#input_mode = "analog"
+
+# Analog actuation settings (only used when input_mode = "analog").
+#
+# `keys` maps an ANALOG BYTE INDEX (0..22, the raw per-key pressure slot the
+# device streams) to a logical evdev key plus its thresholds. Pressure is 0..255
+# (0 = released, 0xFF = bottomed out).
+#
+#   actuation_point        pressure at/above which the key registers as DOWN
+#   release_point          pressure below which a held key registers as UP
+#                          (keep it a bit under actuation_point — the gap is
+#                          hysteresis, which stops the key chattering at the edge)
+#   second_actuation_point (optional) a DEEPER point; crossing it additionally
+#   second_action          fires `second_action` while the primary stays held
+#                          — a "soft press = X, hard press = X+Shift" dual step.
+#
+# TODO: the byte-index -> physical-key map below is a PLACEHOLDER. The real map
+# is per-unit and must be captured with the `analog_map` tool (press each key,
+# note which byte index lights up) before analog mode is usable. Until then these
+# indices/keys are illustrative only.
+#[analog]
+#poll_interval_ms = 50
+#
+#[analog.keys.0]   # TODO: confirm which physical key is byte index 0 on your unit
+#key = "KEY_1"
+#actuation_point = 0x60
+#release_point = 0x50
+#
+#[analog.keys.1]   # a dual-step example: light press = KEY_2, hard press adds Shift
+#key = "KEY_2"
+#actuation_point = 0x60
+#release_point = 0x50
+#second_actuation_point = 0xC0
+#second_action = "KEY_LEFTSHIFT"
+
+
+# ===========================================================================
+# Profile: default  — ships EMPTY by convention.
+# ===========================================================================
+# Every key sits at its hardware default: no binds, no second actions. This is
+# the convention the daemon and UI follow — the default profile stays pristine,
+# and demo / feature binds live in their OWN profile (see `test` below). Omitting
+# lighting and thumb_axis_mode here means the model defaults apply (spectrum at
+# full brightness, eight-way thumb stick).
+[profiles.default]
+name = "default"
+# No linked_app: this profile is the fallback / manual default.
+[profiles.default.base]
+[profiles.default.hypershift]
+
+
+# ===========================================================================
+# Profile: test  — a showcase of every bind type.
+# ===========================================================================
+# Moved out of `default` so the default experience stays clean. Switch to it
+# (from the UI picker, or `fps`'s KEY_6 below) to try the binds.
+[profiles.test]
+name = "test"
+
+# This profile's lighting. effect is tagged by `effect = "..."`.
+[profiles.test.lighting]
+brightness = 255
+effect = { effect = "static", color = { r = 0, g = 255, b = 0 } }
+
+# Base layer: physical key -> action. Actions are tagged by `type = "..."`.
+[profiles.test.base]
+# Hold this key to activate the Hypershift layer below.
+KEY_LEFTALT = { type = "hypershift" }
+# Emit a single key.
+KEY_1 = { type = "key", keys = ["KEY_F1"] }
+# Modifier chord: pressed left-to-right, released right-to-left.
+KEY_2 = { type = "key", keys = ["KEY_LEFTCTRL", "KEY_C"] }
+KEY_3 = { type = "key", keys = ["KEY_LEFTCTRL", "KEY_V"] }
+# A mouse button.
+KEY_4 = { type = "mouse_button", button = "BTN_LEFT" }
+# Run a macro defined under [macros].
+KEY_5 = { type = "macro", name = "gg_wp" }
+# Jump to another profile.
+KEY_6 = { type = "switch_profile", name = "fps" }
+# Launch a program (argv form; first element is the executable).
+KEY_7 = { type = "launch_program", command = ["xdg-open", "https://example.com"] }
+# Kill a key entirely on this layer.
+KEY_8 = { type = "disable" }
+# Let the original key through unchanged.
+KEY_9 = { type = "passthrough" }
+
+# Hypershift layer: applies while the Hypershift-bound key (KEY_LEFTALT) is held.
+[profiles.test.hypershift]
+KEY_1 = { type = "key", keys = ["KEY_F11"] }
+KEY_2 = { type = "key", keys = ["KEY_LEFTCTRL", "KEY_LEFTSHIFT", "KEY_Z"] }
+
+
+# ===========================================================================
+# Profile: fps  (switched to from default's KEY_6, OR auto when the linked app
+# is focused)
+# ===========================================================================
+[profiles.fps]
+name = "fps"
+# Auto-activate this profile when a window of this app class is focused.
+linked_app = "steam_app_default"
+
+[profiles.fps.lighting]
+brightness = 200
+effect = { effect = "reactive", speed = 2, color = { r = 255, g = 0, b = 0 } }
+
+[profiles.fps.base]
+KEY_1 = { type = "key", keys = ["KEY_SPACE"] }          # jump
+KEY_2 = { type = "key", keys = ["KEY_LEFTCTRL"] }       # crouch
+KEY_3 = { type = "key", keys = ["KEY_R"] }              # reload
+# Hop back to the default profile.
+KEY_6 = { type = "switch_profile", name = "default" }
+
+
+# ===========================================================================
+# Macros
+# ===========================================================================
+# Each macro is an ordered list of steps. Steps are tagged by `step = "..."`:
+#   { step = "press",   key = "KEY_X" }   # press, no release
+#   { step = "release", key = "KEY_X" }   # release
+#   { step = "delay",   ms = 50 }         # wait between steps
+#
+# Macros play once per press and ignore key autorepeat.
+
+[macros.gg_wp]
+name = "gg_wp"
+steps = [
+    { step = "press", key = "KEY_G" }, { step = "release", key = "KEY_G" },
+    { step = "press", key = "KEY_G" }, { step = "release", key = "KEY_G" },
+    { step = "press", key = "KEY_SPACE" }, { step = "release", key = "KEY_SPACE" },
+    { step = "delay", ms = 40 },
+    { step = "press", key = "KEY_W" }, { step = "release", key = "KEY_W" },
+    { step = "press", key = "KEY_P" }, { step = "release", key = "KEY_P" },
+]
