@@ -168,7 +168,10 @@ fn Stage(state: Option<AnalogState>) -> Element {
             }
         }
         CapPhase::Enter => {
-            if *dragging.peek() {
+            // Extend the drag only while the primary button is actually held — a
+            // stuck `dragging` (drag released off-cap) must not let a buttonless
+            // hover keep adding caps.
+            if *dragging.peek() && p.primary_held {
                 multi.write().insert(p.key);
             }
         }
@@ -211,13 +214,19 @@ fn Stage(state: Option<AnalogState>) -> Element {
             class: "stage",
             tabindex: "0",
             style: "position:relative; z-index:51;",
-            // Click the bare stage (anywhere but a cap or a modal) to clear both
-            // the single selection and any multi-selection. Caps + modals stop
-            // propagation, so only true background clicks reach here.
+            // Click the bare stage to clear the single selection and end any drag.
+            // A cross-cap drag emits a trailing synthetic click on the caps' common
+            // ancestor (a keypad div that doesn't stop propagation) which bubbles
+            // here AFTER CapPhase::Up opened the bulk editor — so we must NOT clear
+            // the multi-selection while the editor is open (multi_open), or the drag
+            // would be killed. When the editor IS open, its own `.multi-backdrop`
+            // handles dismissal; here we only drop a still-accumulating selection.
             onclick: move |_| {
                 store.write().selected = None;
-                multi.write().clear();
-                multi_open.set(false);
+                dragging.set(false);
+                if !*multi_open.peek() {
+                    multi.write().clear();
+                }
             },
             onkeyup: move |e: KeyboardEvent| {
                 if e.key() == Key::Shift && !*dragging.peek() && !multi.peek().is_empty() {

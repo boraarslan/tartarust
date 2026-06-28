@@ -48,8 +48,9 @@ pub enum CapPhase {
 }
 
 /// A cap pointer event surfaced to the host screen (Calibration) so it can drive
-/// drag-to-select and shift-click multi-select. Carries which cap, the phase, and
-/// whether Shift was held.
+/// drag-to-select and shift-click multi-select. Carries which cap, the phase,
+/// whether Shift was held, and whether the primary mouse button is currently down
+/// (so a drag-extend on `Enter` can't fire on a buttonless hover).
 #[derive(Clone, Copy, PartialEq)]
 pub struct CapPointer {
     /// The cap the pointer is on.
@@ -58,6 +59,8 @@ pub struct CapPointer {
     pub phase: CapPhase,
     /// Whether Shift was held at the time.
     pub shift: bool,
+    /// Whether the primary mouse button is held (true during an active drag).
+    pub primary_held: bool,
 }
 
 #[component]
@@ -259,6 +262,9 @@ fn cap_pointer(
             key,
             phase,
             shift: e.modifiers().contains(Modifiers::SHIFT),
+            primary_held: e
+                .held_buttons()
+                .contains(dioxus::html::input_data::MouseButton::Primary),
         });
     }
 }
@@ -427,6 +433,17 @@ fn Space(
     if multi {
         classes.push_str(" multi");
     }
+    // Bind mode: reflect the current function beneath the legend, like the grid
+    // caps (the spacebar is bindable + analog, so it must not read as inert).
+    let cap_func = if mode == KeypadMode::Bind {
+        let bind = s.bind_for(KeyId::Space, layer);
+        if matches!(bind, Some(BindAction::Disable)) {
+            classes.push_str(" disabled");
+        }
+        cap_function(KeyId::Space, bind.as_ref())
+    } else {
+        String::new()
+    };
     let mut style = if mode == KeypadMode::Lighting {
         let c = lit_color(&s, KeyId::Space);
         format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
@@ -451,7 +468,14 @@ fn Space(
             onmousedown: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Down, &e),
             onmouseenter: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Enter, &e),
             onmouseup: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Up, &e),
-            "THUMB · SPACE"
+            if mode == KeypadMode::Bind {
+                span { class: "cap-legend", "SPACE" }
+                if !cap_func.is_empty() {
+                    span { class: "cap-func", "{cap_func}" }
+                }
+            } else {
+                "THUMB · SPACE"
+            }
             {modal}
         }
     }
@@ -467,6 +491,18 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
     if selected {
         classes.push_str(" selected");
     }
+    // Bind mode: show the bound function in place of the "ALT" legend (the thumb
+    // button is bindable), and dim it when disabled — like the grid caps.
+    let label = if mode == KeypadMode::Bind {
+        let bind = s.bind_for(KeyId::ThumbButton, layer);
+        if matches!(bind, Some(BindAction::Disable)) {
+            classes.push_str(" disabled");
+        }
+        let f = cap_function(KeyId::ThumbButton, bind.as_ref());
+        if f.is_empty() { "ALT".to_string() } else { f }
+    } else {
+        "ALT".to_string()
+    };
     let mut style = if mode == KeypadMode::Lighting {
         let c = lit_color(&s, KeyId::ThumbButton);
         format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
@@ -486,7 +522,7 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
                 e.stop_propagation();
                 select(&mut store, KeyId::ThumbButton, mode, layer);
             },
-            "ALT"
+            span { class: "tb-label", "{label}" }
             {modal}
         }
     }

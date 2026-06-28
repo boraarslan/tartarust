@@ -413,6 +413,20 @@ body {
   border-radius: 50%; letter-spacing: 0.1em;
 }
 .thumb-button.pressed::after { border-radius: 50%; }
+/* The disc's label ellipsises so a bound value can't spill outside the circle. */
+.thumb-button .tb-label {
+  max-width: calc(var(--kp-dir) * 1.5 - 12px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Spacebar in Bind mode stacks its legend over a readable current-function
+   label (like the grid caps); the spacebar is bindable + analog, so it must
+   reflect its bind, not read as inert. */
+.spacebar { flex-direction: column; gap: 3px; }
+.spacebar .cap-func { max-width: calc(var(--kp-thumb) - 16px); }
+.spacebar.disabled, .thumb-button.disabled { opacity: 0.45; }
+.spacebar.disabled .cap-legend,
+.thumb-button.disabled .tb-label { text-decoration: line-through; color: var(--text-mute); }
 
 /* ----- Dual-layer keypad stack (Customize: Base + Hypershift) -------------- */
 /* Two labelled keypads stacked in one stage. Each sits in a `.keypad-layer`
@@ -926,7 +940,7 @@ body {
   transition: height .08s linear;
   pointer-events: none;
 }
-.keycap.pressed .cap-legend, .keycap.pressed .cap-tag { position: relative; z-index: 1; }
+.keycap.pressed .cap-legend, .keycap.pressed .cap-func { position: relative; z-index: 1; }
 
 /* The keypad anchors this popover INSIDE the selected cap (the cap is
    position:relative), so it floats beside that cap instead of the stage. Default
