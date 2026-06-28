@@ -191,21 +191,6 @@ pub fn all_keys() -> Vec<KeyId> {
 // Bind presentation helpers — render `BindAction` on caps + in the editor.
 // ---------------------------------------------------------------------------
 
-/// One-word category tag for a key cap. `None` = unbound (passthrough/default).
-pub fn bind_kind_label(action: Option<&BindAction>) -> &'static str {
-    match action {
-        None => "DEFAULT",
-        Some(BindAction::Key { .. }) => "KEY",
-        Some(BindAction::MouseButton { .. }) => "MOUSE",
-        Some(BindAction::Macro { .. }) => "MACRO",
-        Some(BindAction::SwitchProfile { .. }) => "PROFILE",
-        Some(BindAction::LaunchProgram { .. }) => "LAUNCH",
-        Some(BindAction::Hypershift) => "SHIFT",
-        Some(BindAction::Disable) => "OFF",
-        Some(BindAction::Passthrough) => "DEFAULT",
-    }
-}
-
 /// Human-readable value for a bind, shown on the cap + in the editor.
 pub fn bind_value_label(action: Option<&BindAction>) -> String {
     match action {
@@ -221,6 +206,26 @@ pub fn bind_value_label(action: Option<&BindAction>) -> String {
         Some(BindAction::LaunchProgram { command }) => command.first().cloned().unwrap_or_default(),
         Some(BindAction::Hypershift) => "Hypershift".into(),
         Some(BindAction::Disable) => "Disabled".into(),
+    }
+}
+
+/// The label a Customize cap shows for its CURRENT function — always reflecting
+/// what the key does now, so the cap is self-describing:
+///   * bound (non-passthrough) → the bound value (`bind_value_label`),
+///   * an unbound thumb CARDINAL → its default arrow glyph (the thumb stick
+///     defaults to the arrow keys), so N/E/S/W read as ↑/→/↓/←,
+///   * any other unbound key → empty (its default IS its legend, so the cap's
+///     own legend already says it — no clutter).
+pub fn cap_function(key: KeyId, action: Option<&BindAction>) -> String {
+    match action {
+        Some(a) if !matches!(a, BindAction::Passthrough) => bind_value_label(Some(a)),
+        _ => match key {
+            KeyId::Thumb(ThumbDir::N) => "↑".into(),
+            KeyId::Thumb(ThumbDir::E) => "→".into(),
+            KeyId::Thumb(ThumbDir::S) => "↓".into(),
+            KeyId::Thumb(ThumbDir::W) => "←".into(),
+            _ => String::new(),
+        },
     }
 }
 

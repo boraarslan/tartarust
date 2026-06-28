@@ -194,11 +194,16 @@ fn BindEditor() -> Element {
     }
     let active_kind = pending().unwrap_or(current_kind);
 
+    let current_value = bind_value_label(bind.as_ref());
+
     rsx! {
         div { class: "card",
-            div { class: "card-title",
-                "Binding"
-                span { class: "val", "{cap}" }
+            // Readable binding header: the physical key as a chip, then what it
+            // currently does, at a legible size (replaces the small red value tag).
+            div { class: "bind-head",
+                span { class: "bind-key", "{cap}" }
+                span { class: "bind-sep", "→" }
+                span { class: "bind-now", "{current_value}" }
             }
 
             // ── Type chips — selecting one switches the editor locally. Only
@@ -218,6 +223,14 @@ fn BindEditor() -> Element {
                                     commit_bind(&mut store, key_id, Some(action));
                                     pending.set(None);
                                 } else {
+                                    // Switching to a value-requiring type from a
+                                    // committed value-less bind (Disable/Hypershift):
+                                    // clear it now so the cap drops its disabled/
+                                    // shift state immediately, instead of lingering
+                                    // until the user picks a value (bug fix).
+                                    if matches!(current_kind, Kind::Disable | Kind::Hypershift) {
+                                        commit_bind(&mut store, key_id, None);
+                                    }
                                     pending.set(Some(kind));
                                 }
                             },

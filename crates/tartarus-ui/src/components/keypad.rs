@@ -20,7 +20,7 @@ use dioxus::prelude::*;
 
 use tartarus_ipc::Layer;
 
-use crate::model::{bind_kind_label, BindAction, KeyId, ThumbAxisMode, ThumbDir, WheelDir, GRID_ROWS};
+use crate::model::{cap_function, BindAction, KeyId, ThumbAxisMode, ThumbDir, WheelDir, GRID_ROWS};
 use crate::use_store;
 
 /// What the keypad is being used for on the current screen.
@@ -152,18 +152,16 @@ fn Cap(
         classes.push_str(" selected");
     }
 
-    // Mode-specific cap content + styling.
+    // Mode-specific cap content + styling. In Bind mode the cap shows a readable
+    // label of its CURRENT function (bound value, or the arrow default for a thumb
+    // cardinal) beneath the physical legend — never the old cryptic kind tag.
     let (legend, tag, mut style) = match mode {
         KeypadMode::Bind => {
             let bind = s.bind_for(key_id, layer);
             if matches!(bind, Some(BindAction::Disable)) {
                 classes.push_str(" disabled");
             }
-            (
-                key_id.cap(),
-                bind_kind_label(bind.as_ref()).to_string(),
-                String::new(),
-            )
+            (key_id.cap(), cap_function(key_id, bind.as_ref()), String::new())
         }
         KeypadMode::Lighting => {
             classes.push_str(" lit");
@@ -192,7 +190,7 @@ fn Cap(
             },
             span { class: "cap-legend", "{legend}" }
             if !tag.is_empty() {
-                span { class: "cap-tag", "{tag}" }
+                span { class: "cap-func", "{tag}" }
             }
             {modal}
         }
@@ -280,6 +278,15 @@ fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer
     } else {
         format!("left:{left}%;top:{top}%;")
     };
+    // In Bind mode show the cap's current function: the arrow a cardinal defaults
+    // to (↑→↓←), or a bound value; fall back to the compass label (diagonals,
+    // other modes).
+    let content = if mode == KeypadMode::Bind {
+        let f = cap_function(key, s.bind_for(key, layer).as_ref());
+        if f.is_empty() { dir.label().to_string() } else { f }
+    } else {
+        dir.label().to_string()
+    };
     drop(s);
     rsx! {
         div {
@@ -289,7 +296,7 @@ fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer
                 e.stop_propagation();
                 select(&mut store, key, mode, layer);
             },
-            "{dir.label()}"
+            "{content}"
         }
     }
 }

@@ -217,6 +217,16 @@ body {
 }
 .card-title .val { color: var(--accent); font-family: var(--mono); letter-spacing: 0; }
 
+/* Bind editor header: physical key chip → current function, both legible. */
+.bind-head { display: flex; align-items: center; gap: 11px; margin: 0 0 18px; flex-wrap: wrap; }
+.bind-head .bind-key {
+  font-family: var(--mono); font-size: 17px; font-weight: 700; color: var(--text);
+  background: var(--surface-3); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px 13px; line-height: 1.2;
+}
+.bind-head .bind-sep { color: var(--text-mute); font-size: 15px; }
+.bind-head .bind-now { font-size: 16px; font-weight: 600; color: var(--accent); }
+
 /* ----- Keypad stage ------------------------------------------------------- */
 /* The stage is a query container: every keypad dimension below is expressed in
    `cqw` (% of the stage's inline width) so the WHOLE keypad — caps, gaps, thumb
@@ -293,11 +303,15 @@ body {
   font-size: clamp(10px, 3.2cqw, 13px); font-weight: 600;
   color: var(--text);
 }
-.keycap .cap-tag {
-  font-size: clamp(7px, 2cqw, 8px); letter-spacing: 0.06em;
-  color: var(--text-mute);
+/* The cap's current-function label: readable (not the old cryptic uppercase
+   tag), accent-coloured, single-line and ellipsised so a long bind never
+   overflows the cap. */
+.keycap .cap-func {
+  font-size: clamp(8px, 2.3cqw, 10px); font-weight: 600;
+  color: var(--accent); letter-spacing: 0.01em;
   margin-top: 3px;
-  text-transform: uppercase;
+  max-width: calc(var(--kp) - 6px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .keycap.disabled { opacity: 0.45; }
 .keycap.disabled .cap-legend { text-decoration: line-through; color: var(--text-mute); }
@@ -310,7 +324,7 @@ body {
   opacity: 0.9;
   mix-blend-mode: screen;
 }
-.keycap.lit .cap-legend, .keycap.lit .cap-tag { position: relative; z-index: 1; mix-blend-mode: difference; }
+.keycap.lit .cap-legend, .keycap.lit .cap-func { position: relative; z-index: 1; mix-blend-mode: difference; }
 
 /* Thumb cluster: octagonal 8-way + wheel + space, stacked. Sizes track the same
    container-scaled `--kp*` tokens as the grid, so the cluster grows/shrinks in
@@ -393,6 +407,12 @@ body {
 }
 .spacebar:hover, .thumb-button:hover { color: var(--text); border-color: #3a444c; }
 .spacebar.selected, .thumb-button.selected { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 1px var(--accent), 0 0 14px var(--accent-glow); }
+/* The thumb button (ALT) is round — a distinct, thumb-sized disc, not a bar. */
+.thumb-button {
+  width: calc(var(--kp-dir) * 1.5); height: calc(var(--kp-dir) * 1.5);
+  border-radius: 50%; letter-spacing: 0.1em;
+}
+.thumb-button.pressed::after { border-radius: 50%; }
 
 /* ----- Dual-layer keypad stack (Customize: Base + Hypershift) -------------- */
 /* Two labelled keypads stacked in one stage. Each sits in a `.keypad-layer`
