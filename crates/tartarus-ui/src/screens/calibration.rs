@@ -213,7 +213,16 @@ fn Stage(state: Option<AnalogState>) -> Element {
         div {
             class: "stage",
             tabindex: "0",
-            style: "position:relative; z-index:51;",
+            // Take keyboard focus on mount so the Shift-release detector (onkeyup
+            // below) actually fires: clicking the non-focusable caps doesn't grant
+            // focus to this tabindex container on WebKitGTK, so without this the
+            // Shift+click multi-select path would never open the bulk editor.
+            onmounted: move |e: Event<MountedData>| {
+                spawn(async move {
+                    let _ = e.set_focus(true).await;
+                });
+            },
+            style: "position:relative; z-index:51; outline:none;",
             // Click the bare stage to clear the single selection and end any drag.
             // A cross-cap drag emits a trailing synthetic click on the caps' common
             // ancestor (a keypad div that doesn't stop propagation) which bubbles

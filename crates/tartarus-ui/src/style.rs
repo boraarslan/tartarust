@@ -427,6 +427,7 @@ body {
 .spacebar.disabled, .thumb-button.disabled { opacity: 0.45; }
 .spacebar.disabled .cap-legend,
 .thumb-button.disabled .tb-label { text-decoration: line-through; color: var(--text-mute); }
+.thumb-dir.disabled { opacity: 0.45; text-decoration: line-through; }
 
 /* ----- Dual-layer keypad stack (Customize: Base + Hypershift) -------------- */
 /* Two labelled keypads stacked in one stage. Each sits in a `.keypad-layer`

@@ -352,17 +352,27 @@ fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer
     };
     // In Bind mode show the cap's current function: the arrow a cardinal defaults
     // to (↑→↓←), or a bound value; fall back to the compass label (diagonals,
-    // other modes).
+    // other modes). Dim it when the bind is Disable, like the grid caps.
+    let mut disabled = false;
     let content = if mode == KeypadMode::Bind {
-        let f = cap_function(key, s.bind_for(key, layer).as_ref());
+        let bind = s.bind_for(key, layer);
+        disabled = matches!(bind, Some(BindAction::Disable));
+        let f = cap_function(key, bind.as_ref());
         if f.is_empty() { dir.label().to_string() } else { f }
     } else {
         dir.label().to_string()
     };
     drop(s);
+    let mut classes = String::from("thumb-dir");
+    if selected {
+        classes.push_str(" selected");
+    }
+    if disabled {
+        classes.push_str(" disabled");
+    }
     rsx! {
         div {
-            class: if selected { "thumb-dir selected" } else { "thumb-dir" },
+            class: "{classes}",
             style: "{style}",
             onclick: move |e| {
                 e.stop_propagation();
