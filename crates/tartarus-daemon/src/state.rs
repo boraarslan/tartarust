@@ -27,6 +27,13 @@ pub struct Config {
     /// safe (no links = nothing auto-switches).
     #[serde(default = "default_auto_switch")]
     pub auto_switch: bool,
+    /// Whether the daemon shows a system-tray icon (StatusNotifierItem). Defaults
+    /// to `true`. The tray is best-effort: it spawns on its own D-Bus tasks after
+    /// the device is grabbed and degrades to headless if no tray host is present,
+    /// so turning it off is purely opt-out. Kept BEFORE the table-valued fields
+    /// below because TOML requires all scalar keys to precede any `[table]`.
+    #[serde(default = "default_tray")]
+    pub tray: bool,
     /// How the daemon reads the keypad. `Digital` (default) grabs the evdev
     /// nodes and remaps normal HID keystrokes (the proven M1 path). `Analog`
     /// instead puts the device in DRIVER mode and derives key-down/up from raw
@@ -46,6 +53,10 @@ pub struct Config {
 }
 
 fn default_auto_switch() -> bool {
+    true
+}
+
+fn default_tray() -> bool {
     true
 }
 
@@ -182,6 +193,7 @@ impl Config {
         Config {
             default_profile: "default".to_string(),
             auto_switch: default_auto_switch(),
+            tray: default_tray(),
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -320,6 +332,7 @@ mod tests {
         let cfg = Config {
             default_profile: "nope".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles: {
@@ -415,6 +428,29 @@ mod tests {
         let text = cfg.to_toml().unwrap();
         // Must round-trip: validate() warns but does not reject.
         let back = Config::from_toml(&text).expect("dangling ref must not brick load");
+        assert_eq!(cfg, back);
+    }
+
+    /// `tray` defaults to `true` and is omitted by an existing (pre-tray) config,
+    /// so on-by-default holds; and an explicit `tray = false` round-trips through
+    /// TOML (the daemon rewrites the file from the in-memory model on every
+    /// mutating IPC request, so a lossy serialize would silently re-enable it).
+    #[test]
+    fn tray_defaults_to_true_and_roundtrips() {
+        // Omitted => default true (a config written before the tray existed).
+        let src = r#"
+            default_profile = "default"
+            [profiles.default]
+            name = "default"
+        "#;
+        let cfg = Config::from_toml(src).expect("config without tray must load");
+        assert!(cfg.tray, "tray must default to true when absent");
+
+        // Explicit false survives a serialize/parse round-trip.
+        let mut cfg = Config::default_single();
+        cfg.tray = false;
+        let back = Config::from_toml(&cfg.to_toml().unwrap()).unwrap();
+        assert!(!back.tray);
         assert_eq!(cfg, back);
     }
 

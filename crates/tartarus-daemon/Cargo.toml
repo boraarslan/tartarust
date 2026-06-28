@@ -26,6 +26,10 @@ tokio = { workspace = true }
 evdev = "0.13.2"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
+# System tray (StatusNotifierItem over D-Bus). Runs on its own zbus/tokio tasks,
+# no GTK main loop — the right fit for a headless daemon. Default features pull
+# the `tokio` integration so it shares the daemon's runtime.
+ksni = "0.3"
 
 [dev-dependencies]
 toml = "0.8"
