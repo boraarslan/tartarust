@@ -26,6 +26,12 @@ default_profile = "default"
 # "brave-browser", "code", "discord". Set to false to disable entirely.
 auto_switch = true
 
+# System tray icon (StatusNotifierItem). When on (default), the running daemon
+# shows a tray icon; clicking it opens the UI, and the menu has a Quit. Needs a
+# tray host (waybar, etc.); with none, the daemon just runs headless. Set false
+# to never advertise a tray (e.g. on a headless server).
+tray = true
+
 # Input mode: how the daemon reads the keypad.
 #   "digital" (default) — grab the normal HID keyboard nodes and remap keystrokes
 #                         (the proven path; works on any unit).
