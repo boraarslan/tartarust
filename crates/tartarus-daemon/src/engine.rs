@@ -80,6 +80,12 @@ pub struct Engine {
     active_profile: String,
     /// Whether per-application auto-switch is enabled (persisted).
     auto_switch: bool,
+    /// Whether the daemon shows a system-tray icon. Pass-through state the engine
+    /// never mutates — carried here ONLY so [`Engine::config_snapshot`] writes it
+    /// back faithfully (same rationale as `input_mode`/`analog`). Without it,
+    /// persisting after any mutating IPC request would silently reset a user's
+    /// `tray = false` to the default `true`.
+    tray: bool,
     /// The configured input path. Pass-through state the engine never mutates —
     /// it is carried here ONLY so [`Engine::config_snapshot`] can write it back
     /// faithfully. Without this, persisting after any mutating IPC request would
@@ -125,6 +131,7 @@ impl Engine {
             active_profile: config.default_profile.clone(),
             configured_default: config.default_profile,
             auto_switch: config.auto_switch,
+            tray: config.tray,
             input_mode: config.input_mode,
             analog: config.analog,
             dirty: false,
@@ -193,6 +200,7 @@ impl Engine {
         Config {
             default_profile: self.configured_default.clone(),
             auto_switch: self.auto_switch,
+            tray: self.tray,
             input_mode: self.input_mode,
             analog: self.analog.clone(),
             profiles: self.profiles.clone(),
@@ -901,6 +909,7 @@ mod tests {
         Config {
             default_profile: "default".to_string(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1025,6 +1034,7 @@ mod tests {
         let mut e = Engine::new(Config {
             default_profile: "p1".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1134,6 +1144,7 @@ mod tests {
         let config = Config {
             default_profile: "p1".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1167,6 +1178,7 @@ mod tests {
         let mut e = Engine::new(Config {
             default_profile: "p1".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1198,6 +1210,7 @@ mod tests {
         Engine::new(Config {
             default_profile: "default".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1365,6 +1378,7 @@ mod tests {
         Engine::new(Config {
             default_profile: "default".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1542,6 +1556,7 @@ mod tests {
         Engine::new(Config {
             default_profile: "default".into(),
             auto_switch,
+            tray: true,
             input_mode: InputMode::Digital,
             analog: AnalogConfig::default(),
             profiles,
@@ -1650,6 +1665,7 @@ mod tests {
         let mut e = Engine::new(Config {
             default_profile: "default".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Analog,
             analog: analog.clone(),
             profiles,
@@ -1697,6 +1713,7 @@ mod tests {
         Engine::new(Config {
             default_profile: "default".into(),
             auto_switch: true,
+            tray: true,
             input_mode: InputMode::Analog,
             analog,
             profiles,

@@ -184,6 +184,7 @@ fn test_config() -> Config {
     Config {
         default_profile: "default".into(),
         auto_switch: false,
+        tray: true,
         input_mode: InputMode::Digital,
         analog: AnalogConfig::default(),
         profiles,
@@ -202,6 +203,7 @@ fn passthrough_config() -> Config {
     Config {
         default_profile: "default".into(),
         auto_switch: false,
+        tray: true,
         input_mode: InputMode::Digital,
         analog: AnalogConfig::default(),
         profiles,

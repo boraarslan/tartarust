@@ -33,3 +33,4 @@ pub mod macros;
 pub mod output;
 pub mod pipeline;
 pub mod state;
+pub mod tray;

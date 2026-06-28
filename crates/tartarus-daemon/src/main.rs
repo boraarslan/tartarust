@@ -30,6 +30,7 @@ use tartarus_daemon::ipc_server::{self, EngineMsg};
 use tartarus_daemon::output;
 use tartarus_daemon::pipeline;
 use tartarus_daemon::state::{Config, InputMode};
+use tartarus_daemon::tray;
 
 const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -251,6 +252,9 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
     let info = device.query_info();
     let _ = engine_tx.send(EngineMsg::DeviceInfo(info));
 
+    // Read the tray opt-out before `config` is moved into the engine below.
+    let tray_enabled = config.tray;
+
     // The engine runs on its own thread, owning all state + the output/device
     // handles. It applies the startup profile's lighting once up. The handle is
     // intentionally not joined (see the shutdown comment below).
@@ -272,7 +276,21 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
         // feed changes to the engine (which decides whether to switch profiles).
         appfocus::spawn(engine_tx.clone());
 
-        wait_for_shutdown_signal().await;
+        // Optional system tray. Spawned AFTER the device is grabbed and the IPC
+        // server is up. Its "Quit" item shuts the daemon down by sending on
+        // `quit_tx`, which feeds the SAME select as SIGINT/SIGTERM below — so the
+        // tray takes the existing NORMAL-restore + grab-release shutdown path,
+        // never a bare `process::exit`. Keep `_tray_handle` bound for the rest of
+        // the daemon's life: dropping it would tear the tray service down.
+        let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let _tray_handle = if tray_enabled {
+            tray::spawn(quit_tx).await
+        } else {
+            tracing::info!("system tray disabled by config (tray = false)");
+            None
+        };
+
+        wait_for_shutdown_signal(&mut quit_rx).await;
     });
 
     // Shutdown. In ANALOG mode we MUST restore NORMAL before `process::exit`
@@ -336,13 +354,18 @@ fn install_grab_safety_panic_hook() {
     }));
 }
 
-/// Await SIGINT or SIGTERM.
-async fn wait_for_shutdown_signal() {
+/// Await SIGINT, SIGTERM, or a tray "Quit" request — whichever comes first.
+async fn wait_for_shutdown_signal(quit_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+        // Tray "Quit". `Some(())` (NOT `None`) so that a closed channel — the
+        // tray was disabled or failed to start, dropping the only sender —
+        // *disables* this branch rather than firing it, leaving us waiting on the
+        // signals above. Without this guard the daemon would shut down on startup.
+        Some(()) = quit_rx.recv() => {}
     }
 }
 
