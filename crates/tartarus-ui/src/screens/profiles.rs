@@ -168,7 +168,17 @@ pub fn Profiles() -> Element {
                                 onchange: move |e| {
                                     let new_name = e.value();
                                     let from = committed();
-                                    if !new_name.is_empty() && new_name != from {
+                                    if new_name.trim().is_empty() {
+                                        // Empty commit: snap the optimistic edit back
+                                        // to the committed name and send nothing.
+                                        let mut w = store.write();
+                                        if let Some(p) = w.profiles.get_mut(i) {
+                                            p.name = from.clone();
+                                        }
+                                        if i == w.active_profile {
+                                            w.profile.name = from;
+                                        }
+                                    } else if new_name != from {
                                         crate::ipc::rename_profile(store, from, new_name.clone());
                                         // Keep `committed` current so a follow-up
                                         // edit (Enter, keep typing) sends from the

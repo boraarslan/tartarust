@@ -112,8 +112,8 @@ pub fn fire_or_resync(mut store: dioxus::prelude::Signal<AppState>, request: Req
                 tracing_warn(&format!("daemon rejected mutation: {message}; resyncing"));
                 resync(store).await;
             }
-            Err(e) => tracing_warn(&e),
-            Ok(_) => {}
+            Ok(_) => mark_online(store),
+            Err(e) => mark_offline(store, &e),
         }
     });
 }
@@ -130,7 +130,7 @@ pub fn save_profile(mut store: dioxus::prelude::Signal<AppState>, name: Option<S
             Ok(Response::Error { message }) => {
                 tracing_warn(&format!("daemon rejected save: {message}"))
             }
-            Err(e) => tracing_warn(&e),
+            Err(e) => mark_offline(store, &e),
             Ok(_) => {}
         }
     });
@@ -139,6 +139,30 @@ pub fn save_profile(mut store: dioxus::prelude::Signal<AppState>, name: Option<S
 /// Minimal stderr log (the UI has no tracing subscriber configured).
 fn tracing_warn(msg: &str) {
     eprintln!("[tartarus-ui ipc] {msg}");
+}
+
+/// A transport-level failure (connect/write/read) means the daemon is
+/// unreachable: log it and flip the store into the honest offline state so the
+/// whole UI falls back to last-known rendering (review #1). A daemon-sent
+/// `Response::Error` is a *reachable* daemon rejecting a mutation, NOT this.
+fn mark_offline(mut store: dioxus::prelude::Signal<AppState>, err: &str) {
+    use dioxus::prelude::{ReadableExt, WritableExt};
+    tracing_warn(err);
+    let already = store.read().offline;
+    if !already {
+        store.with_mut(|s| s.offline = true);
+    }
+}
+
+/// A completed exchange (any decoded `Response`, even a rejection) proves the
+/// daemon is reachable again: clear a stale offline flag so the UI recovers from
+/// a transient blip. Guarded so the common already-online path never re-renders.
+fn mark_online(mut store: dioxus::prelude::Signal<AppState>) {
+    use dioxus::prelude::{ReadableExt, WritableExt};
+    let offline = store.read().offline;
+    if offline {
+        store.with_mut(|s| s.offline = false);
+    }
 }
 
 /// Probe the daemon and, if reachable, build a fresh [`AppState`] from live
@@ -325,7 +349,26 @@ pub fn switch_profile_and_reload(mut store: dioxus::prelude::Signal<AppState>, n
         s.switching = true;
     });
     dioxus::prelude::spawn(async move {
-        let _ = send(Request::SwitchProfile { name: name.clone() }).await;
+        match send(Request::SwitchProfile { name: name.clone() }).await {
+            // A reachable daemon rejected the switch (e.g. the profile was
+            // deleted by another client): the optimistic index flip now points at
+            // a stale name, so resync authoritative state to revert it rather than
+            // leave the header disagreeing with the daemon + editors (review #2).
+            Ok(Response::Error { message }) => {
+                tracing_warn(&format!("daemon rejected switch: {message}; resyncing"));
+                store.with_mut(|s| s.switching = false);
+                resync(store).await;
+                return;
+            }
+            // Offline: keep the optimistic choice (SetBind no-ops while the daemon
+            // is absent, so the last-known body can't corrupt).
+            Err(e) => {
+                mark_offline(store, &e);
+                store.with_mut(|s| s.switching = false);
+                return;
+            }
+            Ok(_) => mark_online(store),
+        }
         let profile = match send(Request::GetProfile { name: name.clone() }).await {
             Ok(Response::Profile(p)) => Some(p),
             _ => None,
@@ -397,16 +440,32 @@ pub fn save_macro(store: dioxus::prelude::Signal<AppState>, r#macro: Macro) {
 pub fn fetch_macro(mut store: dioxus::prelude::Signal<AppState>, name: String) {
     use dioxus::prelude::WritableExt;
     dioxus::prelude::spawn(async move {
-        if let Ok(Response::Macro(m)) = send(Request::GetMacro { name: name.clone() }).await {
-            // `with_mut` (not `write`) sidesteps the name clash with tokio's
-            // AsyncWriteExt::write, which is glob-imported in this module.
-            store.with_mut(|s| {
-                if let Some(slot) = s.macros.iter_mut().find(|x| x.name == name) {
-                    slot.steps = m.steps;
-                }
-                // Mark the body loaded so the editor unblocks (review #5).
-                s.macros_loaded.insert(name.clone());
-            });
+        match send(Request::GetMacro { name: name.clone() }).await {
+            Ok(Response::Macro(m)) => {
+                // `with_mut` (not `write`) sidesteps the name clash with tokio's
+                // AsyncWriteExt::write, which is glob-imported in this module.
+                store.with_mut(|s| {
+                    if let Some(slot) = s.macros.iter_mut().find(|x| x.name == name) {
+                        slot.steps = m.steps;
+                    }
+                    // Mark the body loaded so the editor unblocks (review #5).
+                    s.macros_loaded.insert(name.clone());
+                });
+            }
+            // The macro is gone daemon-side (deleted between ListMacros and the
+            // click): mark it loaded anyway so the editor resolves out of its
+            // "Loading…" placeholder and the prefetch effect stops refetching
+            // (review #3), instead of hammering a doomed request per store write.
+            Ok(Response::Error { message }) => {
+                tracing_warn(&format!("daemon rejected GetMacro: {message}"));
+                store.with_mut(|s| {
+                    s.macros_loaded.insert(name.clone());
+                });
+            }
+            // Transport failure: flip offline (which also gates the prefetch effect
+            // off) and leave the stub unloaded so a later retry can fill it.
+            Err(e) => mark_offline(store, &e),
+            Ok(_) => {}
         }
     });
 }

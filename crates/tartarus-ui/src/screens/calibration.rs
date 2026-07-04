@@ -150,6 +150,13 @@ fn Stage(state: Option<AnalogState>) -> Element {
         .collect();
     let show_multi = multi_open() && !multi_cfgs.is_empty();
 
+    // Evdev names the daemon has an analog config for; the multi-open paths (drag
+    // release and Shift release) only open the bulk editor when the selection
+    // resolves to at least one of these, else the highlight would wedge with
+    // nothing to show.
+    let configured: BTreeSet<String> = keys.iter().map(|c| c.key.clone()).collect();
+    let configured_shift = configured.clone();
+
     // Cap pointer handler: a plain click single-selects (the cap-anchored editor);
     // a drag across >1 cap, or Shift+clicks, build the multi set; the bulk editor
     // opens on drag-end (>1 caps) or on Shift release (the stage's onkeyup below).
@@ -180,13 +187,24 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 dragging.set(false);
                 let set = multi.peek().clone();
                 if set.len() > 1 {
-                    multi_open.set(true); // a real multi-key drag → bulk editor
-                    store.write().selected = None;
+                    // A real multi-key drag → bulk editor, but only if the drag
+                    // covers ≥1 analog-configured cap; otherwise clear the set so
+                    // the highlight can't wedge with no editor to open.
+                    if set.iter().any(|k| {
+                        k.evdev().map(|n| configured.contains(&n)).unwrap_or(false)
+                    }) {
+                        multi_open.set(true);
+                        store.write().selected = None;
+                    } else {
+                        multi.write().clear();
+                    }
                 } else {
-                    // A single click: fall back to the normal single-key editor.
+                    // A single click: fall back to the normal single-key editor,
+                    // and re-clicking the already-selected cap toggles it closed.
                     multi.write().clear();
                     if let Some(&k) = set.iter().next() {
-                        store.write().selected = Some(k);
+                        let mut w = store.write();
+                        w.selected = if w.selected == Some(k) { None } else { Some(k) };
                     }
                 }
             }
@@ -238,9 +256,16 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 }
             },
             onkeyup: move |e: KeyboardEvent| {
-                if e.key() == Key::Shift && !*dragging.peek() && !multi.peek().is_empty() {
-                    multi_open.set(true);
-                    store.write().selected = None;
+                if e.key() == Key::Shift && !*dragging.peek() {
+                    let set = multi.peek().clone();
+                    if set.iter().any(|k| {
+                        k.evdev().map(|n| configured_shift.contains(&n)).unwrap_or(false)
+                    }) {
+                        multi_open.set(true);
+                        store.write().selected = None;
+                    } else {
+                        multi.write().clear();
+                    }
                 }
             },
             Keypad {
@@ -305,12 +330,13 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
         let act = actuation();
         let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
         for c in cfgs.read().iter() {
+            let sap = c.second_actuation_point.map(|p| p.max(act.saturating_add(1))); // deeper than actuation
             crate::ipc::set_actuation(
                 store,
                 c.index,
                 act,
                 rel,
-                c.second_actuation_point,
+                sap,
                 c.second_action.clone(),
             );
         }

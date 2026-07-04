@@ -306,7 +306,8 @@ body {
 /* The cap's current-function label: readable (not the old cryptic uppercase
    tag), accent-coloured, single-line and ellipsised so a long bind never
    overflows the cap. */
-.keycap .cap-func {
+.keycap .cap-func,
+.spacebar .cap-func {
   font-size: clamp(8px, 2.3cqw, 10px); font-weight: 600;
   color: var(--accent); letter-spacing: 0.01em;
   margin-top: 3px;
@@ -423,7 +424,7 @@ body {
    label (like the grid caps); the spacebar is bindable + analog, so it must
    reflect its bind, not read as inert. */
 .spacebar { flex-direction: column; gap: 3px; }
-.spacebar .cap-func { max-width: calc(var(--kp-thumb) - 16px); }
+.spacebar .cap-func { max-width: calc(var(--kp-thumb) - 16px); margin-top: 0; }
 .spacebar.disabled, .thumb-button.disabled { opacity: 0.45; }
 .spacebar.disabled .cap-legend,
 .thumb-button.disabled .tb-label { text-decoration: line-through; color: var(--text-mute); }
@@ -593,7 +594,7 @@ body {
 .list-item.active { border-color: var(--accent); background: rgba(68,214,44,0.05); }
 .list-item .li-main { flex: 1; }
 .list-item .li-name { font-weight: 600; font-size: 13.5px; }
-.list-item .li-meta { font-size: 11.5px; color: var(--text-mute); font-family: var(--mono); margin-top: 2px; }
+.li-meta { font-size: 11.5px; color: var(--text-mute); font-family: var(--mono); margin-top: 2px; }
 .list-item .li-badge {
   font-size: 10px; padding: 3px 8px; border-radius: 999px;
   background: var(--surface-2); color: var(--text-dim); letter-spacing: 0.05em;
@@ -746,6 +747,8 @@ body {
 .menu-item:hover { background: var(--surface-2); color: var(--text); }
 .menu-item.danger { color: var(--danger); }
 .menu-item.danger:hover { background: rgba(255,90,77,0.1); color: var(--danger); }
+.menu-item.disabled { opacity: 0.45; cursor: default; }
+.menu-item.disabled:hover { background: transparent; color: var(--text-dim); }
 .menu-sep { height: 1px; background: var(--line-soft); margin: 4px 6px; }
 .kebab {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1063,4 +1066,6 @@ body {
   transition: border-color .12s, color .12s;
 }
 .link-add:hover { border-color: var(--accent-dim); color: var(--text); }
+.link-add.disabled { opacity: 0.45; cursor: default; }
+.link-add.disabled:hover { border-color: var(--line); color: var(--text-dim); }
 "#;

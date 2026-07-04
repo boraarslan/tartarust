@@ -253,12 +253,14 @@ fn MacroEditor(
     // typing doesn't churn the store (which would flip `selected_loaded` false
     // online — unmounting this editor mid-type — and pre-commit the name so the
     // onchange rename guard always short-circuits). Re-seeded whenever the
-    // selected macro (`sel`) changes. Hooks live above the early return below so
-    // the hook order is stable when `loaded` flips false->true.
+    // selected macro's identity (its name) changes — keying on `sel` would leave
+    // a deleted macro's name over the survivor that slides into the same index.
+    // Hooks live above the early return below so the hook order is stable when
+    // `loaded` flips false->true.
     let mut name_draft = use_signal(|| macro_name.clone());
-    let mut prev_sel = use_signal(|| sel);
-    if *prev_sel.peek() != sel {
-        prev_sel.set(sel);
+    let mut prev_name = use_signal(|| macro_name.clone());
+    if *prev_name.peek() != macro_name {
+        prev_name.set(macro_name.clone());
         name_draft.set(macro_name.clone());
     }
 
