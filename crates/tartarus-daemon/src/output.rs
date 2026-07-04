@@ -7,12 +7,13 @@
 //! that is reading physical events; at worst they queue behind the macro on the
 //! output thread, which is the desired "macro plays out atomically" behavior.
 
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
 use anyhow::Context;
 use evdev::uinput::VirtualDevice;
-use evdev::{AttributeSet, InputEvent, KeyCode, RelativeAxisCode};
+use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode};
 
 use tartarus_ipc::model::MacroStep;
 
@@ -109,10 +110,32 @@ fn resolve_node_paths(device: &mut VirtualDevice) -> Vec<std::path::PathBuf> {
 }
 
 /// The output thread body: drain the channel, emitting / playing macros.
+///
+/// `engine_held` mirrors the keys the engine currently holds down on the sink
+/// (its stream is already refcount-deduped: one press per first holder, one
+/// release per last). A playing macro must not touch those keys: its Release
+/// would silently lift a modifier a physical bind is still holding — the
+/// engine's later release is then a no-op the kernel filters — and its Press is
+/// a no-op anyway (the key is already down). Skipping both keeps the macro's
+/// own press/release pairing consistent without tracking macro-held keys.
 fn output_loop(mut device: VirtualDevice, rx: Receiver<OutputCmd>) {
+    let mut engine_held: HashSet<u16> = HashSet::new();
     for cmd in rx {
         match cmd {
             OutputCmd::Emit(events) => {
+                for event in &events {
+                    if event.event_type() == EventType::KEY {
+                        match event.value() {
+                            1 => {
+                                engine_held.insert(event.code());
+                            }
+                            0 => {
+                                engine_held.remove(&event.code());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if let Err(err) = device.emit(&events) {
                     tracing::warn!(?err, "failed to emit events");
                 }
@@ -121,6 +144,17 @@ fn output_loop(mut device: VirtualDevice, rx: Receiver<OutputCmd>) {
                 for action in actions {
                     match action {
                         MacroAction::Emit(events) => {
+                            let events: Vec<InputEvent> = events
+                                .into_iter()
+                                .filter(|event| {
+                                    !(event.event_type() == EventType::KEY
+                                        && matches!(event.value(), 0 | 1)
+                                        && engine_held.contains(&event.code()))
+                                })
+                                .collect();
+                            if events.is_empty() {
+                                continue;
+                            }
                             if let Err(err) = device.emit(&events) {
                                 tracing::warn!(?err, "failed to emit macro event");
                             }

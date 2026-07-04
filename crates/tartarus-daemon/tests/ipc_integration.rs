@@ -55,7 +55,7 @@ fn ipc_server_handles_requests_over_a_real_socket() {
 
     rt.block_on(async {
       tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let listener = ipc_server::bind(&socket).await.expect("bind");
+        let (listener, _lock) = ipc_server::bind(&socket).await.expect("bind");
         let serve_tx = engine_tx.clone();
         let server = tokio::spawn(async move { ipc_server::serve(listener, serve_tx).await });
 
@@ -131,7 +131,7 @@ fn ipc_server_rejects_oversized_request_line() {
 
     rt.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let listener = ipc_server::bind(&socket).await.expect("bind");
+            let (listener, _lock) = ipc_server::bind(&socket).await.expect("bind");
             let serve_tx = engine_tx.clone();
             let server = tokio::spawn(async move { ipc_server::serve(listener, serve_tx).await });
 

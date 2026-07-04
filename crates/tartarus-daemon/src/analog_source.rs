@@ -235,20 +235,27 @@ fn resolve_actuator(index: usize, key: &AnalogKey) -> Option<KeyActuator> {
         None
     })?;
 
-    // release_point must sit below actuation_point for hysteresis; if a user
-    // inverts them, clamp release just under actuation so the key can still
-    // release (otherwise it would latch down forever).
-    let actuation_point = key.actuation_point;
-    let release_point = key.release_point.min(actuation_point.saturating_sub(1));
+    // Anti-latch clamps. Release fires on `pressure < release_point` and
+    // pressure is a u8, so a release_point of 0 can never fire: both points are
+    // clamped to at least 1 (an actuation_point of 0 would otherwise press on
+    // the first frame and latch down forever). Beyond that, release_point must
+    // sit below actuation_point for hysteresis; if a user inverts them, clamp
+    // release just under actuation so the key can still release.
+    let actuation_point = key.actuation_point.max(1);
+    let release_point = key
+        .release_point
+        .min(actuation_point.saturating_sub(1))
+        .max(1);
 
     let second = match (key.second_actuation_point, key.second_action.as_deref()) {
         (Some(point), Some(name)) => match parse_key(name) {
             Some(second_key) => {
+                let point = point.max(1);
                 let hysteresis = actuation_point.saturating_sub(release_point);
                 Some(SecondStep {
                     key: second_key,
                     actuation_point: point,
-                    release_point: point.saturating_sub(hysteresis),
+                    release_point: point.saturating_sub(hysteresis).max(1),
                 })
             }
             None => {
@@ -905,6 +912,43 @@ mod tests {
         assert_eq!(
             a.on_frame(&frame_at(5, 0x00)),
             vec![(KeyCode::KEY_Q, VALUE_UP)]
+        );
+    }
+
+    #[test]
+    fn zero_actuation_point_is_clamped_not_latched() {
+        // actuation_point = 0 would press on the first frame (any pressure >= 0)
+        // and never release (pressure is a u8, so it can't go below a clamped
+        // release_point of 0). Both points are clamped to at least 1.
+        let mut keys = BTreeMap::new();
+        keys.insert(
+            "5".to_string(),
+            AnalogKey {
+                key: "KEY_Q".into(),
+                actuation_point: 0,
+                release_point: 0,
+                second_actuation_point: Some(0),
+                second_action: Some("KEY_W".into()),
+            },
+        );
+        let mut a = Actuator::from_config(&AnalogConfig {
+            poll_interval_ms: 50,
+            keys,
+        });
+        // An untouched key (pressure 0) must NOT actuate.
+        assert_eq!(a.on_frame(&frame_at(5, 0x00)), vec![]);
+        // Any real pressure crosses both clamped points (1)...
+        assert_eq!(
+            a.on_frame(&frame_at(5, 0x40)),
+            vec![
+                (KeyCode::KEY_Q, VALUE_DOWN),
+                (KeyCode::KEY_W, VALUE_DOWN)
+            ]
+        );
+        // ...and a full release (pressure 0 < clamped release 1) lets go again.
+        assert_eq!(
+            a.on_frame(&frame_at(5, 0x00)),
+            vec![(KeyCode::KEY_Q, VALUE_UP), (KeyCode::KEY_W, VALUE_UP)]
         );
     }
 

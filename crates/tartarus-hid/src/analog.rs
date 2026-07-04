@@ -287,11 +287,21 @@ impl AnalogReader {
             }
         }
 
-        if !fds[0]
-            .revents()
-            .map(|r| r.contains(PollFlags::POLLIN))
-            .unwrap_or(false)
-        {
+        let revents = fds[0].revents().unwrap_or(PollFlags::empty());
+        if !revents.contains(PollFlags::POLLIN) {
+            // ERR/HUP/NVAL are always reported by poll(2) even though we only
+            // asked for POLLIN, and after an unplug hidraw keeps the fd in that
+            // state forever: treating it as idle would busy-spin and never tear
+            // down (stuck keys, 100% CPU). Only when POLLIN is also set do we
+            // fall through and drain the remaining buffered frame first.
+            if revents.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL) {
+                return Err(HidError::Io {
+                    path: self.input_node.clone(),
+                    source: std::io::Error::other(format!(
+                        "poll reported {revents:?} (device unplugged?)"
+                    )),
+                });
+            }
             return Ok(None);
         }
 

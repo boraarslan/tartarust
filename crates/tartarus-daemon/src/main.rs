@@ -121,7 +121,9 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
         .build()
         .context("building tokio runtime")?;
     let socket = ipc_server::socket_path();
-    let listener = rt
+    // `_socket_lock` is the single-instance startup lock; it must stay alive for
+    // the daemon's whole lifetime (the kernel releases it on process exit).
+    let (listener, _socket_lock) = rt
         .block_on(ipc_server::bind(&socket))
         .context("binding IPC socket")?;
 
@@ -354,13 +356,19 @@ fn install_grab_safety_panic_hook() {
     }));
 }
 
-/// Await SIGINT, SIGTERM, or a tray "Quit" request — whichever comes first.
+/// Await SIGINT, SIGTERM, SIGHUP, or a tray "Quit" request — whichever comes
+/// first. SIGHUP matters: closing the terminal the daemon was launched from
+/// must take this same shutdown path — at the default disposition it would kill
+/// the process outright, skipping the NORMAL-mode restore and stranding an
+/// analog-mode keypad in DRIVER mode (mute) until replug.
 async fn wait_for_shutdown_signal(quit_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
     use tokio::signal::unix::{signal, SignalKind};
     let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
+    let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
         _ = term.recv() => {}
+        _ = hup.recv() => {}
         // Tray "Quit". `Some(())` (NOT `None`) so that a closed channel — the
         // tray was disabled or failed to start, dropping the only sender —
         // *disables* this branch rather than firing it, leaving us waiting on the
@@ -383,18 +391,27 @@ fn discover() -> Result<()> {
 
 fn discover_keys() -> Result<()> {
     let nodes = input::discover_required()?;
-    println!(
-        "Grabbing {} Tartarus node(s). Press keys on the keypad.",
-        nodes.len()
+    // Same narrow grab surface as the daemon's run mode: keyboard nodes only,
+    // and skip the 6KRO boot keyboard when the NKRO node is present — both
+    // interfaces emit each keypress, so grabbing both prints every key twice.
+    let plan = input::plan_grabs(
+        &nodes
+            .iter()
+            .map(|n| (n.kind, n.interface))
+            .collect::<Vec<_>>(),
     );
+    let grab_count = nodes
+        .iter()
+        .zip(&plan.grab)
+        .filter(|(n, g)| n.kind == NodeKind::Keyboard && **g)
+        .count();
+    println!("Grabbing {grab_count} Tartarus node(s). Press keys on the keypad.");
     println!("Each line is: <down|up|repeat>  <KEY_NAME>  (code <n>)");
     println!("Ctrl-C in this terminal to stop.\n");
 
     let mut handles = Vec::new();
-    for mut node in nodes {
-        // Only the keyboard node carries the keys we want to print; grab nothing
-        // else (same narrow surface the daemon's run mode uses).
-        if node.kind != NodeKind::Keyboard {
+    for (mut node, do_grab) in nodes.into_iter().zip(plan.grab) {
+        if node.kind != NodeKind::Keyboard || !do_grab {
             continue;
         }
         input::grab(&mut node).context("grabbing device for discovery")?;

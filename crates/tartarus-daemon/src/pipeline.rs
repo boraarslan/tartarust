@@ -239,8 +239,20 @@ fn launch_program(argv: Vec<String>) {
         return;
     };
     tracing::info!(?argv, "launching program");
-    if let Err(err) = ProcCommand::new(program).args(args).spawn() {
-        tracing::error!(?err, ?argv, "failed to launch program");
+    match ProcCommand::new(program).args(args).spawn() {
+        Ok(mut child) => {
+            // std does not reap on drop: without a wait() the child would stay
+            // a zombie in the process table for the daemon's whole lifetime.
+            let reaper = thread::Builder::new()
+                .name("tartarus-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            if let Err(err) = reaper {
+                tracing::error!(?err, "failed to spawn reaper thread");
+            }
+        }
+        Err(err) => tracing::error!(?err, ?argv, "failed to launch program"),
     }
 }
 

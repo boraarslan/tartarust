@@ -10,6 +10,7 @@
 //! This server runs inside the daemon's single tokio runtime, concurrently with
 //! the synchronous remap engine and the OS reader/output/device threads.
 
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender as StdSender;
 use std::time::Duration;
@@ -55,7 +56,35 @@ pub enum EngineMsg {
 /// daemon owns the device — we refuse to start (single-instance / single-owner
 /// guard). A failed connect means a stale socket from a crashed daemon — unlink
 /// and bind. This doubles as the "exactly one process owns the device" guard.
-pub async fn bind(path: &Path) -> Result<UnixListener> {
+///
+/// The probe-unlink-bind sequence is check-then-act, so it is serialized under
+/// an exclusive flock on a sidecar lock file: without it, two daemons starting
+/// at the same instant can both judge the socket stale, and the loser would
+/// unlink the winner's freshly-bound LIVE socket (daemon running but
+/// unreachable). The returned [`File`] holds the lock — the caller must keep it
+/// alive for the daemon's lifetime; the kernel releases it on process exit.
+pub async fn bind(path: &Path) -> Result<(UnixListener, File)> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let lock_path = path.with_extension("lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("opening startup lock {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => anyhow::bail!(
+            "another tartarus-daemon is starting or already running (lock {} is held)",
+            lock_path.display()
+        ),
+        Err(TryLockError::Error(err)) => {
+            return Err(err)
+                .with_context(|| format!("locking startup lock {}", lock_path.display()));
+        }
+    }
     if path.exists() {
         match UnixStream::connect(path).await {
             Ok(_) => {
@@ -71,13 +100,10 @@ pub async fn bind(path: &Path) -> Result<UnixListener> {
             }
         }
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
     let listener = UnixListener::bind(path)
         .with_context(|| format!("binding IPC socket {}", path.display()))?;
     tracing::info!(path = %path.display(), "IPC server listening");
-    Ok(listener)
+    Ok((listener, lock))
 }
 
 /// Accept loop: spawn a handler task per connection. Runs until the runtime
@@ -117,8 +143,8 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
         buf.clear();
         // Read one newline-delimited frame with a byte cap and an idle timeout.
         let line = match read_capped_line(&mut reader, &mut buf).await {
-            Ok(Ok(0)) => break,        // clean EOF
-            Ok(Ok(_n)) => &buf[..],    // a frame (without the trailing newline)
+            Ok(Ok(Frame::Eof)) => break,
+            Ok(Ok(Frame::Line)) => &buf[..], // a frame (without the trailing newline)
             Ok(Err(overflow)) => {
                 // Oversized line: reply with an error and close the connection
                 // rather than keep buffering.
@@ -147,10 +173,19 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
     Ok(())
 }
 
+/// One framing outcome from [`read_capped_line`]. EOF is a distinct variant so
+/// an empty line (`Line(0)`, e.g. a client's accidental leading `\n`) is skipped
+/// by the connection loop instead of being mistaken for a disconnect.
+enum Frame {
+    /// The peer closed the connection (no pending payload).
+    Eof,
+    /// A complete frame is in `buf` (possibly empty — an empty line).
+    Line,
+}
+
 /// Read one `\n`-terminated frame into `buf`, with a HARD byte cap and an idle
 /// timeout. Returns:
-///   * `Ok(Ok(n))` — read `n` payload bytes (0 = clean EOF); `buf` holds the
-///     frame without the trailing newline,
+///   * `Ok(Ok(frame))` — EOF, or a frame in `buf` (without the trailing newline),
 ///   * `Ok(Err(msg))` — the frame reached the cap before a newline (overflow),
 ///   * `Err(())` — idle timeout elapsed waiting for data.
 ///
@@ -159,7 +194,7 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
 /// newline-less flood never allocates past [`MAX_REQUEST_BYTES`]. The whole read
 /// is wrapped in one idle timeout.
 #[allow(clippy::type_complexity)]
-async fn read_capped_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<Result<usize, String>, ()>
+async fn read_capped_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<Result<Frame, String>, ()>
 where
     R: AsyncBufReadExt + Unpin,
 {
@@ -167,10 +202,12 @@ where
         loop {
             let available = match reader.fill_buf().await {
                 Ok(b) => b,
-                Err(_) => return Ok(0usize), // read error: treat as EOF
+                Err(_) => return Ok(Frame::Eof), // read error: treat as EOF
             };
             if available.is_empty() {
-                return Ok(buf.len()); // EOF (clean if buf empty)
+                // EOF. A non-empty buf is a final unterminated frame; hand it
+                // over — the next call returns Eof.
+                return Ok(if buf.is_empty() { Frame::Eof } else { Frame::Line });
             }
             // Copy up to a newline, but never past the cap.
             match available.iter().position(|&b| b == b'\n') {
@@ -183,7 +220,7 @@ where
                             "request exceeds {MAX_REQUEST_BYTES} bytes; closing connection"
                         ));
                     }
-                    return Ok(buf.len());
+                    return Ok(Frame::Line);
                 }
                 None => {
                     let room = MAX_REQUEST_BYTES.saturating_sub(buf.len());
