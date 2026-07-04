@@ -153,7 +153,19 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
                 print_response(send(&socket, &Request::GetLighting { profile: None }).await?)
             }
             LightingOp::Set { effect, color } => {
-                let lighting = build_lighting(&effect, color.as_deref())?;
+                // Validate the args BEFORE the round-trip below, so a bad
+                // --color errors cleanly even with no daemon running. The
+                // brightness is a placeholder until the fetch.
+                let mut lighting = build_lighting(&effect, color.as_deref(), 255)?;
+                // `set` changes only the effect — preserve the profile's current brightness.
+                let current = send(&socket, &Request::GetLighting { profile: None }).await?;
+                match current {
+                    Response::Lighting(state) => lighting.brightness = state.brightness,
+                    other => {
+                        print_response(other);
+                        return Ok(());
+                    }
+                }
                 print_response(
                     send(
                         &socket,
@@ -186,7 +198,7 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
 }
 
 /// Build a [`LightingState`] from an effect name and optional hex color.
-fn build_lighting(effect: &str, color: Option<&str>) -> Result<LightingState> {
+fn build_lighting(effect: &str, color: Option<&str>, brightness: u8) -> Result<LightingState> {
     let parsed_color = color.map(parse_hex).transpose()?;
     let need_color = || parsed_color.unwrap_or(Rgb::new(0, 255, 0));
     let effect = match effect {
@@ -213,14 +225,14 @@ fn build_lighting(effect: &str, color: Option<&str>) -> Result<LightingState> {
     };
     Ok(LightingState {
         effect,
-        brightness: 255,
+        brightness,
     })
 }
 
 /// Parse `RRGGBB` (optionally `#RRGGBB`) into an [`Rgb`].
 fn parse_hex(s: &str) -> Result<Rgb> {
     let s = s.strip_prefix('#').unwrap_or(s);
-    if s.len() != 6 {
+    if s.len() != 6 || !s.is_ascii() {
         bail!("color must be 6 hex digits (RRGGBB), got `{s}`");
     }
     let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16);
