@@ -2,27 +2,13 @@
 
 use dioxus::prelude::*;
 
-use crate::components::KeyPicker;
-use crate::model::{key_label, Macro, MacroStep};
+use crate::components::{KeyPicker, PageHead};
+use crate::model::{adjust_index_after_remove, key_label, unique_name, Macro, MacroStep};
 use crate::use_store;
 
 // ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
-
-/// Pick a macro name that doesn't collide with an existing one. Returns `base`
-/// if free, else appends " 2", " 3", … until unique. Macros are identified BY
-/// NAME (delete, SaveMacro, the loaded-set), so colliding names corrupt those.
-fn unique_macro_name(base: &str, macros: &[Macro]) -> String {
-    let taken = |n: &str| macros.iter().any(|m| m.name == n);
-    if !taken(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|i| format!("{base} {i}"))
-        .find(|n| !taken(n))
-        .unwrap_or_else(|| base.to_string())
-}
 
 fn step_kind(s: &MacroStep) -> &'static str {
     match s {
@@ -77,8 +63,7 @@ pub fn Macros() -> Element {
     let selected_loaded = offline
         || macros
             .get(sel)
-            .map(|m| s.macros_loaded.contains(&m.name))
-            .unwrap_or(true);
+            .is_none_or(|m| s.macros_loaded.contains(&m.name));
     drop(s);
 
     // Prefetch the initially-selected macro's body once on mount: after a live
@@ -100,9 +85,9 @@ pub fn Macros() -> Element {
     let macro_count = macros.len();
 
     rsx! {
-        div { class: "page-head",
-            h1 { class: "page-title", "Macros" }
-            p { class: "page-sub", "Create and edit keystroke sequences that can be bound to any key." }
+        PageHead {
+            title: "Macros",
+            sub: "Create and edit keystroke sequences that can be bound to any key.",
         }
 
         div { class: "work macros",
@@ -162,14 +147,8 @@ pub fn Macros() -> Element {
                                                             w.macros_loaded.remove(&del_name);
                                                         }
                                                     }
-                                                    // Three-case index fix-up so a delete BELOW the
-                                                    // selection doesn't mis-point selected_macro.
                                                     let len = w.macros.len();
-                                                    if i < w.selected_macro {
-                                                        w.selected_macro -= 1;
-                                                    } else if w.selected_macro >= len {
-                                                        w.selected_macro = len.saturating_sub(1);
-                                                    }
+                                                    adjust_index_after_remove(&mut w.selected_macro, i, len);
                                                 }
                                                 crate::ipc::delete_macro(store, del_name.clone());
                                             },
@@ -191,7 +170,7 @@ pub fn Macros() -> Element {
                             let mut w = store.write();
                             // De-dupe the name: identity-by-name (delete, SaveMacro,
                             // the loaded-set) breaks when two macros share a name.
-                            let name = unique_macro_name("New Macro", &w.macros);
+                            let name = unique_name("New Macro", |n| w.macros.iter().any(|m| m.name == n));
                             let new_macro = Macro { name: name.clone(), steps: vec![] };
                             w.macros.push(new_macro.clone());
                             // A brand-new local macro has its (empty) body in hand;
@@ -217,7 +196,7 @@ pub fn Macros() -> Element {
                     },
                     Some(m) => {
                         let macro_name = m.name.clone();
-                        let steps = m.steps.clone();
+                        let steps = m.steps;
                         rsx! {
                             MacroEditor {
                                 macro_name,
@@ -300,7 +279,7 @@ fn MacroEditor(
                                 let old = std::mem::replace(&mut m.name, new_name.clone());
                                 let m = m.clone();
                                 w.macros_loaded.remove(&old);
-                                w.macros_loaded.insert(new_name.clone());
+                                w.macros_loaded.insert(new_name);
                                 Some((old, m))
                             }
                             // Empty or unchanged: snap the draft back to the real name.
@@ -443,85 +422,77 @@ fn StepChip(index: usize, step: MacroStep, sel: usize) -> Element {
         });
     };
 
+    // Every chip kind renders the same chip until clicked into edit mode; only
+    // the inline editors below differ per kind.
+    if !editing() {
+        return rsx! {
+            span { class: "{class}", onclick: move |_| editing.set(true),
+                span { class: "num", "{index + 1}" }
+                span { "{label}" }
+                span { class: "chip-x", onclick: remove, "✕" }
+            }
+        };
+    }
+
     match &step {
-        // DELAY — click to edit the ms inline.
+        // DELAY — edit the ms inline.
         MacroStep::Delay { ms } => {
             let ms = *ms;
-            if editing() {
-                rsx! {
-                    span { class: "{class}",
-                        span { class: "num", "{index + 1}" }
-                        input {
-                            // No dedicated CSS class in the API surface for the
-                            // inline ms field; style it small + mono inline to sit
-                            // inside the .step-chip.editing wrapper.
-                            style: "width:52px; background:transparent; border:none; outline:none; color:var(--amber); font-family:var(--mono); font-size:11.5px;",
-                            r#type: "number",
-                            min: "0",
-                            autofocus: true,
-                            value: "{ms}",
-                            // Commit on change/blur; clamp parse failures to 0.
-                            onchange: move |e| {
-                                let new_ms = e.value().parse::<u64>().unwrap_or(0);
-                                editing.set(false);
-                                mutate_and_save(store, sel, move |m| match m.steps.get_mut(index) {
-                                    Some(MacroStep::Delay { ms }) if *ms != new_ms => {
-                                        *ms = new_ms;
-                                        true
-                                    }
-                                    _ => false,
-                                });
-                            },
-                            onkeydown: move |e| {
-                                if e.key() == Key::Enter {
-                                    editing.set(false);
+            rsx! {
+                span { class: "{class}",
+                    span { class: "num", "{index + 1}" }
+                    input {
+                        // No dedicated CSS class in the API surface for the
+                        // inline ms field; style it small + mono inline to sit
+                        // inside the .step-chip.editing wrapper.
+                        style: "width:52px; background:transparent; border:none; outline:none; color:var(--amber); font-family:var(--mono); font-size:11.5px;",
+                        r#type: "number",
+                        min: "0",
+                        autofocus: true,
+                        value: "{ms}",
+                        // Commit on change/blur; clamp parse failures to 0.
+                        onchange: move |e| {
+                            let new_ms = e.value().parse::<u64>().unwrap_or(0);
+                            editing.set(false);
+                            mutate_and_save(store, sel, move |m| match m.steps.get_mut(index) {
+                                Some(MacroStep::Delay { ms }) if *ms != new_ms => {
+                                    *ms = new_ms;
+                                    true
                                 }
-                            },
-                        }
-                        span { "ms" }
-                        span { class: "chip-x", onclick: remove, "✕" }
+                                _ => false,
+                            });
+                        },
+                        onkeydown: move |e| {
+                            if e.key() == Key::Enter {
+                                editing.set(false);
+                            }
+                        },
                     }
-                }
-            } else {
-                rsx! {
-                    span { class: "{class}", onclick: move |_| editing.set(true),
-                        span { class: "num", "{index + 1}" }
-                        span { "{label}" }
-                        span { class: "chip-x", onclick: remove, "✕" }
-                    }
+                    span { "ms" }
+                    span { class: "chip-x", onclick: remove, "✕" }
                 }
             }
         }
-        // PRESS / RELEASE — click to re-pick the key via KeyPicker.
+        // PRESS / RELEASE — re-pick the key via KeyPicker.
         MacroStep::Press { key } | MacroStep::Release { key } => {
             let cur = key.clone();
-            if editing() {
-                rsx! {
-                    span { class: "{class}",
-                        span { class: "num", "{index + 1}" }
-                        KeyPicker {
-                            value: cur,
-                            on_pick: move |new_key: String| {
-                                editing.set(false);
-                                mutate_and_save(store, sel, move |m| match m.steps.get_mut(index) {
-                                    Some(MacroStep::Press { key } | MacroStep::Release { key }) => {
-                                        *key = new_key;
-                                        true
-                                    }
-                                    _ => false,
-                                });
-                            },
-                        }
-                        span { class: "chip-x", onclick: remove, "✕" }
+            rsx! {
+                span { class: "{class}",
+                    span { class: "num", "{index + 1}" }
+                    KeyPicker {
+                        value: cur,
+                        on_pick: move |new_key: String| {
+                            editing.set(false);
+                            mutate_and_save(store, sel, move |m| match m.steps.get_mut(index) {
+                                Some(MacroStep::Press { key } | MacroStep::Release { key }) => {
+                                    *key = new_key;
+                                    true
+                                }
+                                _ => false,
+                            });
+                        },
                     }
-                }
-            } else {
-                rsx! {
-                    span { class: "{class}", onclick: move |_| editing.set(true),
-                        span { class: "num", "{index + 1}" }
-                        span { "{label}" }
-                        span { class: "chip-x", onclick: remove, "✕" }
-                    }
+                    span { class: "chip-x", onclick: remove, "✕" }
                 }
             }
         }

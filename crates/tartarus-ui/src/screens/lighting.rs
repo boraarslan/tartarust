@@ -7,7 +7,7 @@
 
 use dioxus::prelude::*;
 
-use crate::components::{Keypad, KeypadMode, Slider};
+use crate::components::{Keypad, KeypadMode, PageHead, Slider};
 use crate::model::{Effect, KeyId, Rgb, WaveDirection};
 use crate::use_store;
 
@@ -87,9 +87,9 @@ pub fn Lighting() -> Element {
     let current_name = effect_name(&effect);
 
     rsx! {
-        div { class: "page-head",
-            h1 { class: "page-title", "Lighting" }
-            p { class: "page-sub", "Pick an effect, dial in your colour, and set how bright the keys glow." }
+        PageHead {
+            title: "Lighting",
+            sub: "Pick an effect, dial in your colour, and set how bright the keys glow.",
         }
 
         div { class: "work",
@@ -351,7 +351,7 @@ fn CustomPaint(store: Signal<crate::model::AppState>, frame: Vec<Rgb>) -> Elemen
                             ColorPicker {
                                 value: current,
                                 on_pick: {
-                                    let frame = frame.clone();
+                                    let frame = frame;
                                     move |c: Rgb| {
                                         let mut next = frame.clone();
                                         if next.len() < 21 {

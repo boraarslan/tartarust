@@ -30,9 +30,14 @@ use dioxus::prelude::*;
 
 use tartarus_ipc::{AnalogKeyConfig, AnalogState};
 
-use crate::components::{CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, Slider, Toggle};
+use crate::components::{CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, PageHead, Slider, Toggle};
 use crate::model::{pretty_key, KeyId};
 use crate::use_store;
+
+/// Integer percentage readout for a raw 0..255 pressure value.
+fn pct100(v: u8) -> u8 {
+    (v as u16 * 100 / 255) as u8
+}
 
 /// How often to re-poll the live analog state while on this screen.
 const POLL_INTERVAL_MS: u64 = 100;
@@ -72,9 +77,9 @@ pub fn Calibration() -> Element {
     });
 
     rsx! {
-        div { class: "page-head",
-            h1 { class: "page-title", "Calibration" }
-            p { class: "page-sub", "Click a key to tune its analog actuation. Caps fill with live pressure as you press." }
+        PageHead {
+            title: "Calibration",
+            sub: "Click a key to tune its analog actuation. Caps fill with live pressure as you press.",
         }
 
         // Contextual notice for non-live states. The keypad below ALWAYS renders
@@ -191,7 +196,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
                     // covers ≥1 analog-configured cap; otherwise clear the set so
                     // the highlight can't wedge with no editor to open.
                     if set.iter().any(|k| {
-                        k.evdev().map(|n| configured.contains(&n)).unwrap_or(false)
+                        k.evdev().is_some_and(|n| configured.contains(&n))
                     }) {
                         multi_open.set(true);
                         store.write().selected = None;
@@ -259,7 +264,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 if e.key() == Key::Shift && !*dragging.peek() {
                     let set = multi.peek().clone();
                     if set.iter().any(|k| {
-                        k.evdev().map(|n| configured_shift.contains(&n)).unwrap_or(false)
+                        k.evdev().is_some_and(|n| configured_shift.contains(&n))
                     }) {
                         multi_open.set(true);
                         store.write().selected = None;
@@ -295,7 +300,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
             // always re-seeds for the current selection.
             if show_multi {
                 MultiCalModal {
-                    cfgs: multi_cfgs.clone(),
+                    cfgs: multi_cfgs,
                     on_close: move |_| {
                         multi.write().clear();
                         multi_open.set(false);
@@ -317,8 +322,8 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
     let store = use_store();
     let count = cfgs.len();
     // Seed the sliders from the first selected key; editing then writes all.
-    let seed_act = cfgs.first().map(|c| c.actuation_point).unwrap_or(0x60);
-    let seed_rel = cfgs.first().map(|c| c.release_point).unwrap_or(0x50);
+    let seed_act = cfgs.first().map_or(0x60, |c| c.actuation_point);
+    let seed_rel = cfgs.first().map_or(0x50, |c| c.release_point);
     let cfgs = use_signal(|| cfgs);
     let mut actuation = use_signal(|| seed_act);
     let mut release = use_signal(|| seed_rel);
@@ -344,7 +349,6 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
 
     let act_v = actuation();
     let rel_v = release();
-    let pct100 = |v: u8| (v as u16 * 100 / 255) as u8;
     let names: String = cfgs
         .read()
         .iter()
@@ -510,7 +514,6 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
     // Marker/fill positions as 0..100% of the 0–255 scale, and an integer percent
     // for the readouts (the device reports raw pressure; % is just a convenience).
     let pct = |v: u8| (v as f32 / 255.0 * 100.0).clamp(0.0, 100.0);
-    let pct100 = |v: u8| (v as u16 * 100 / 255) as u8;
 
     // The keypad anchors this popover inside the selected cap; `.open-left` just
     // flips which side it opens on. No top/left math — the cap is its frame.
@@ -620,7 +623,7 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
                     // not free-text evdev: it always yields a valid evdev name, so
                     // the push needs no text coercion. Picking sets + pushes live.
                     KeyPicker {
-                        value: second_act_v.clone(),
+                        value: second_act_v,
                         on_pick: move |picked: String| {
                             second_action.set(picked);
                             push();

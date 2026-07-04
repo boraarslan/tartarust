@@ -174,19 +174,6 @@ pub const GRID_EVDEV: [&str; 19] = [
 /// Per-row cap counts for the keypad renderer (rows of 5/5/5/4). Total = 19.
 pub const GRID_ROWS: [usize; 4] = [5, 5, 5, 4];
 
-/// Every input, in render order. Kept for the integration phase (bulk
-/// apply/diff against device state); screens iterate geometry directly.
-#[allow(dead_code)]
-pub fn all_keys() -> Vec<KeyId> {
-    let mut v: Vec<KeyId> = (0..19).map(KeyId::Grid).collect();
-    v.extend(ThumbDir::ALL.iter().map(|&d| KeyId::Thumb(d)));
-    v.push(KeyId::Wheel(WheelDir::Up));
-    v.push(KeyId::Wheel(WheelDir::Down));
-    v.push(KeyId::Space);
-    v.push(KeyId::ThumbButton);
-    v
-}
-
 // ---------------------------------------------------------------------------
 // Bind presentation helpers — render `BindAction` on caps + in the editor.
 // ---------------------------------------------------------------------------
@@ -499,9 +486,7 @@ fn label_map() -> &'static std::collections::HashMap<&'static str, &'static str>
 /// names not in the catalog (e.g. raw `discover-keys` output).
 pub fn key_label(name: &str) -> String {
     label_map()
-        .get(name)
-        .map(|l| l.to_string())
-        .unwrap_or_else(|| pretty_key(name))
+        .get(name).map_or_else(|| pretty_key(name), |l| l.to_string())
 }
 
 /// Lowercased search haystacks for the picker filter, built once. Each tuple is
@@ -577,8 +562,6 @@ pub struct AppState {
     pub selected: Option<KeyId>,
     /// Index of the macro open in the editor.
     pub selected_macro: usize,
-    /// Index of the profile open in the Profiles editor.
-    pub selected_profile_edit: usize,
 
     /// True while a profile switch + reload is in flight. Gates bind writes so a
     /// `SetBind` can't fire against the stale active-profile name mid-switch.
@@ -706,9 +689,34 @@ pub fn mock_state() -> AppState {
         layer: Layer::Base,
         selected: None,
         selected_macro: 0,
-        selected_profile_edit: 0,
         switching: false,
         unsaved: false,
         macros_loaded,
     }
+}
+
+/// Three-case index fix-up after `list.remove(removed)` for an index tracking a
+/// position in that list: a removal BELOW the index shifts it down by one (an
+/// overflow-only clamp would leave it pointing at the wrong, shifted item), and
+/// an index past the new end clamps to the last item (0 when the list empties).
+pub fn adjust_index_after_remove(index: &mut usize, removed: usize, new_len: usize) {
+    if removed < *index {
+        *index -= 1;
+    } else if *index >= new_len {
+        *index = new_len.saturating_sub(1);
+    }
+}
+
+/// Pick a name that doesn't collide with `taken`: `base` if free, else
+/// `"{base} 2"`, `"{base} 3"`, … until unique. Profiles and macros are both
+/// addressed BY NAME on the daemon, so colliding names make the name-keyed
+/// operations (rename / delete / the loaded-set) ambiguous — de-dupe on create.
+pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|i| format!("{base} {i}"))
+        .find(|n| !taken(n))
+        .unwrap_or_else(|| base.to_string())
 }

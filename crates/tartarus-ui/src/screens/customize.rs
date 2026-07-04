@@ -17,7 +17,7 @@
 
 use dioxus::prelude::*;
 
-use crate::components::KeyPicker;
+use crate::components::{KeyPicker, PageHead};
 use crate::model::{bind_value_label, key_label, BindAction, KeyId, Layer};
 use crate::use_store;
 
@@ -27,9 +27,9 @@ pub fn Customize() -> Element {
     let selected = store.read().selected;
 
     rsx! {
-        div { class: "page-head",
-            h1 { class: "page-title", "Customize" }
-            p { class: "page-sub", "Click any input to remap it. The Hypershift keypad below edits the secondary layer held under your thumb." }
+        PageHead {
+            title: "Customize",
+            sub: "Click any input to remap it. The Hypershift keypad below edits the secondary layer held under your thumb.",
         }
 
         div { class: "work",
@@ -243,7 +243,7 @@ fn BindEditor() -> Element {
             // ── Value editor for the active kind.
             div { class: "field",
                 label { class: "field-label", "{value_field_label(active_kind)}" }
-                {value_editor(store, key_id, active_kind, bind.clone(), pending)}
+                {value_editor(store, key_id, active_kind, bind, pending)}
             }
 
             div { class: "divider" }
@@ -277,11 +277,11 @@ fn BindEditor() -> Element {
 /// low-error control (pills + picker, dropdown, or debounced multi-arg field)
 /// and commits through [`commit_bind`].
 fn value_editor(
-    store: Signal<crate::model::AppState>,
+    mut store: Signal<crate::model::AppState>,
     key_id: KeyId,
     kind: Kind,
     bind: Option<BindAction>,
-    pending: Signal<Option<Kind>>,
+    mut pending: Signal<Option<Kind>>,
 ) -> Element {
     match kind {
         Kind::Keyboard => {
@@ -301,8 +301,44 @@ fn value_editor(
                 MousePicker { store, key_id, current, pending }
             }
         }
-        Kind::Macro => rsx! { MacroPicker { store, key_id, bind: bind.clone(), pending } },
-        Kind::Profile => rsx! { ProfilePicker { store, key_id, bind: bind.clone(), pending } },
+        Kind::Macro => {
+            let names: Vec<String> = store.read().macros.iter().map(|m| m.name.clone()).collect();
+            let current = match &bind {
+                Some(BindAction::Macro { name }) => name.clone(),
+                _ => String::new(),
+            };
+            rsx! {
+                NamePicker {
+                    names,
+                    current,
+                    placeholder: "Choose a macro…",
+                    empty_msg: "No macros yet — create one on the Macros screen.",
+                    on_pick: move |name| {
+                        commit_bind(&mut store, key_id, Some(BindAction::Macro { name }));
+                        pending.set(None);
+                    },
+                }
+            }
+        }
+        Kind::Profile => {
+            let names: Vec<String> = store.read().profiles.iter().map(|p| p.name.clone()).collect();
+            let current = match &bind {
+                Some(BindAction::SwitchProfile { name }) => name.clone(),
+                _ => String::new(),
+            };
+            rsx! {
+                NamePicker {
+                    names,
+                    current,
+                    placeholder: "Choose a profile…",
+                    empty_msg: "No profiles available.",
+                    on_pick: move |name| {
+                        commit_bind(&mut store, key_id, Some(BindAction::SwitchProfile { name }));
+                        pending.set(None);
+                    },
+                }
+            }
+        }
         Kind::Launch => {
             let command = match &bind {
                 Some(BindAction::LaunchProgram { command }) => command.clone(),
@@ -390,7 +426,7 @@ fn ChordEditor(
                 KeyPicker {
                     value: "".to_string(),
                     on_pick: {
-                        let keys = keys.clone();
+                        let keys = keys;
                         move |picked: String| {
                             let mut next = keys.clone();
                             next.push(picked);
@@ -432,25 +468,20 @@ fn MousePicker(
     }
 }
 
-/// Dropdown of existing macros (`store.macros`) → `Macro{name}`. No free text.
+/// Dropdown over a list of names (macros, profiles) → one picked name. The
+/// empty state text and the committed bind stay caller-side, so this holds no
+/// bind-kind knowledge.
 #[component]
-fn MacroPicker(
-    store: Signal<crate::model::AppState>,
-    key_id: KeyId,
-    bind: Option<BindAction>,
-    pending: Signal<Option<Kind>>,
+fn NamePicker(
+    names: Vec<String>,
+    current: String,
+    placeholder: &'static str,
+    empty_msg: &'static str,
+    on_pick: EventHandler<String>,
 ) -> Element {
-    let mut store = store;
-    let mut pending = pending;
-    let names: Vec<String> = store.read().macros.iter().map(|m| m.name.clone()).collect();
-    let current = match &bind {
-        Some(BindAction::Macro { name }) => name.clone(),
-        _ => String::new(),
-    };
-
     if names.is_empty() {
         return rsx! {
-            div { class: "field-value", style: "color:var(--text-mute);", "No macros yet — create one on the Macros screen." }
+            div { class: "field-value", style: "color:var(--text-mute);", "{empty_msg}" }
         };
     }
 
@@ -460,65 +491,14 @@ fn MacroPicker(
                 onchange: move |e| {
                     let name = e.value();
                     if !name.is_empty() {
-                        commit_bind(&mut store, key_id, Some(BindAction::Macro { name }));
-                        pending.set(None);
+                        on_pick.call(name);
                     }
                 },
                 option {
                     value: "",
                     selected: current.is_empty(),
                     disabled: true,
-                    "Choose a macro…"
-                }
-                for name in names {
-                    option {
-                        value: "{name}",
-                        selected: name == current,
-                        "{name}"
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Dropdown of existing profiles (`store.profiles`) → `SwitchProfile{name}`.
-#[component]
-fn ProfilePicker(
-    store: Signal<crate::model::AppState>,
-    key_id: KeyId,
-    bind: Option<BindAction>,
-    pending: Signal<Option<Kind>>,
-) -> Element {
-    let mut store = store;
-    let mut pending = pending;
-    let names: Vec<String> = store.read().profiles.iter().map(|p| p.name.clone()).collect();
-    let current = match &bind {
-        Some(BindAction::SwitchProfile { name }) => name.clone(),
-        _ => String::new(),
-    };
-
-    if names.is_empty() {
-        return rsx! {
-            div { class: "field-value", style: "color:var(--text-mute);", "No profiles available." }
-        };
-    }
-
-    rsx! {
-        div { class: "profile-select",
-            select {
-                onchange: move |e| {
-                    let name = e.value();
-                    if !name.is_empty() {
-                        commit_bind(&mut store, key_id, Some(BindAction::SwitchProfile { name }));
-                        pending.set(None);
-                    }
-                },
-                option {
-                    value: "",
-                    selected: current.is_empty(),
-                    disabled: true,
-                    "Choose a profile…"
+                    "{placeholder}"
                 }
                 for name in names {
                     option {

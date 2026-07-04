@@ -8,4 +8,4 @@ mod widgets;
 pub use key_picker::KeyPicker;
 pub use keypad::{CapPhase, CapPointer, Keypad, KeypadMode};
 pub use shell::Shell;
-pub use widgets::{Slider, Switch, Toggle};
+pub use widgets::{PageHead, Slider, Switch, Toggle};

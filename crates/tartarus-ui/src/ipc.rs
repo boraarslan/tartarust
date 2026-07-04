@@ -222,9 +222,6 @@ pub async fn load_state_on(socket: &std::path::Path, mut base: AppState) -> Opti
     }
 
     // Keep the editor selection in range after the overlay.
-    if base.selected_profile_edit >= base.profiles.len() {
-        base.selected_profile_edit = base.active_profile;
-    }
     if base.selected_macro >= base.macros.len() {
         base.selected_macro = 0;
     }
@@ -461,9 +458,7 @@ pub fn fetch_macro(mut store: dioxus::prelude::Signal<AppState>, name: String) {
     });
 }
 
-/// Available for a future "delete whole macro" action (the Macros screen
-/// currently edits steps, not macro deletion).
-#[allow(dead_code)]
+/// Delete a macro by name (the ✕ on a Macros-screen rail row).
 pub fn delete_macro(store: dioxus::prelude::Signal<AppState>, name: String) {
     fire_or_resync(store, Request::DeleteMacro { name });
 }

@@ -196,10 +196,9 @@ body {
   gap: 26px;
   align-items: start;
 }
-.work.wide { grid-template-columns: minmax(0, 1fr) clamp(260px, 23vw, 320px); }
 /* Narrow windows: drop the inspector below the stage so neither column clips. */
 @media (max-width: 1040px) {
-  .work, .work.wide { grid-template-columns: minmax(0, 1fr); }
+  .work { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ----- Cards / panels ----------------------------------------------------- */
@@ -262,9 +261,6 @@ body {
 /* Rows of 5/5/5/4: the short final row aligns LEFT so there's no phantom gap
    where a 5th cap would sit (no centering, no stagger). */
 .kp-row { display: flex; gap: var(--kp-gap); justify-content: flex-start; }
-/* The 19-key layout dropped the angled top/bottom rows. Neutralize the old
-   stagger classes so a row that still carries them stays flush-left. */
-.kp-row.angle-top, .kp-row.angle-bottom { transform: none; }
 
 .keycap {
   width: var(--kp); height: var(--kp);
@@ -501,20 +497,6 @@ body {
 }
 .empty-inspector .big { font-size: 26px; opacity: 0.5; }
 
-/* ----- Layer toggle (Hypershift) ----------------------------------------- */
-.layer-toggle {
-  display: inline-flex; padding: 3px;
-  background: var(--surface-2); border: 1px solid var(--line);
-  border-radius: 999px;
-}
-.layer-toggle button {
-  border: none; background: transparent; color: var(--text-dim);
-  padding: 6px 16px; border-radius: 999px; cursor: pointer;
-  font-family: var(--sans); font-size: 12.5px; font-weight: 600;
-  transition: all .12s;
-}
-.layer-toggle button.active { background: var(--accent); color: #07140a; }
-.layer-toggle button.active.shift { background: var(--amber); }
 
 /* ----- Sliders ------------------------------------------------------------ */
 .slider-row { display: flex; align-items: center; gap: 14px; }
@@ -601,27 +583,6 @@ body {
 }
 .list-item .li-badge.live { background: rgba(68,214,44,0.12); color: var(--accent); }
 
-/* ----- Macro step rows ---------------------------------------------------- */
-.step {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
-  border: 1px solid var(--line-soft);
-  font-family: var(--mono); font-size: 13px;
-}
-.step .step-num { color: var(--text-mute); width: 22px; }
-.step .step-kind {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 2px 7px; border-radius: 4px; font-family: var(--sans); font-weight: 600;
-}
-.step .step-kind.press   { background: rgba(68,214,44,0.14); color: var(--accent); }
-.step .step-kind.release { background: var(--surface-3); color: var(--text-dim); }
-.step .step-kind.delay   { background: rgba(245,185,66,0.14); color: var(--amber); }
-.step .step-body { flex: 1; }
-.step .step-x { color: var(--text-mute); cursor: pointer; }
-.step .step-x:hover { color: var(--danger); }
-
 /* ----- Buttons ------------------------------------------------------------ */
 .btn {
   display: inline-flex; align-items: center; gap: 7px;
@@ -635,14 +596,11 @@ body {
 .btn.primary:hover { background: #50e637; }
 .btn.danger { color: var(--danger); }
 .btn.danger:hover { border-color: var(--danger); }
-.btn.rec { color: var(--danger); }
-.btn.rec .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 8px var(--danger); }
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .divider { height: 1px; background: var(--line-soft); margin: 16px 0; }
 
 /* ----- Analog calibration (live pressure) -------------------------------- */
-.analog-keys { display: flex; flex-direction: column; max-width: 560px; }
 /* The live pressure track: a filled bar (current pressure) with thin vertical
    markers for the release / actuation / second-step thresholds. */
 .press-bar {
@@ -675,55 +633,15 @@ body {
 /* Page-redesign primitives (modal / menu / pickers / chords / steps / etc.)   */
 /* ========================================================================== */
 
-/* ----- Backdrop + modal --------------------------------------------------- */
+/* ----- Backdrop ------------------------------------------------------------ */
 .backdrop {
   position: fixed; inset: 0; z-index: 40;
   background: rgba(5,6,7,0.62);
   backdrop-filter: blur(1.5px);
   display: flex; align-items: center; justify-content: center;
 }
-.modal {
-  width: min(560px, calc(100vw - 48px));
-  max-height: calc(100vh - 64px);
-  display: flex; flex-direction: column;
-  background: var(--surface-0);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 18px 50px rgba(0,0,0,0.6), 0 0 0 1px rgba(0,0,0,0.3);
-  overflow: hidden;
-}
-.modal-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 16px 18px;
-  border-bottom: 1px solid var(--line-soft);
-  font-size: 14px; font-weight: 700; letter-spacing: -0.01em;
-}
-.modal-body { padding: 18px; overflow-y: auto; }
-.modal-foot {
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--line-soft);
-  background: var(--surface-0);
-}
-.modal-x {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; flex: none;
-  border: none; background: transparent;
-  color: var(--text-mute); border-radius: var(--radius-sm);
-  font-size: 16px; line-height: 1; cursor: pointer;
-  transition: background .12s, color .12s;
-}
-.modal-x:hover { background: var(--surface-2); color: var(--text); }
 
-/* ----- Popover + kebab menu ----------------------------------------------- */
-.popover {
-  position: absolute; z-index: 30;
-  background: var(--surface-1);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 12px 32px rgba(0,0,0,0.55);
-  padding: 6px;
-}
+/* ----- Kebab menu ---------------------------------------------------------- */
 .menu {
   position: absolute; z-index: 30;
   min-width: 168px;

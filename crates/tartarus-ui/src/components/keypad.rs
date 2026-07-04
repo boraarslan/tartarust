@@ -219,12 +219,7 @@ fn Cap(
     };
     drop(s);
 
-    // Live pressure: fill the cloned `.keycap.pressed::after` overlay from the
-    // bottom. `--press` is the fill height as a percentage of 0..255.
-    if let Some(v) = press {
-        classes.push_str(" pressed");
-        style.push_str(&format!("--press:{:.1}%;", v as f32 / 255.0 * 100.0));
-    }
+    push_pressure_fill(press, &mut classes, &mut style);
 
     rsx! {
         div {
@@ -344,9 +339,7 @@ fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer
     let s = store.read();
     let selected = is_selected(&s, key, mode, layer);
     let style = if mode == KeypadMode::Lighting {
-        let c = lit_color(&s, key);
-        // Glow the face like the main grid, keeping the legend legible.
-        format!("left:{left}%;top:{top}%;background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
+        format!("left:{left}%;top:{top}%;{}", lit_face_style(&lit_color(&s, key)))
     } else {
         format!("left:{left}%;top:{top}%;")
     };
@@ -455,16 +448,12 @@ fn Space(
         String::new()
     };
     let mut style = if mode == KeypadMode::Lighting {
-        let c = lit_color(&s, KeyId::Space);
-        format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
+        lit_face_style(&lit_color(&s, KeyId::Space))
     } else {
         String::new()
     };
     drop(s);
-    if let Some(v) = press {
-        classes.push_str(" pressed");
-        style.push_str(&format!("--press:{:.1}%;", v as f32 / 255.0 * 100.0));
-    }
+    push_pressure_fill(press, &mut classes, &mut style);
     rsx! {
         div {
             class: "{classes}",
@@ -514,16 +503,12 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
         "ALT".to_string()
     };
     let mut style = if mode == KeypadMode::Lighting {
-        let c = lit_color(&s, KeyId::ThumbButton);
-        format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
+        lit_face_style(&lit_color(&s, KeyId::ThumbButton))
     } else {
         String::new()
     };
     drop(s);
-    if let Some(v) = press {
-        classes.push_str(" pressed");
-        style.push_str(&format!("--press:{:.1}%;", v as f32 / 255.0 * 100.0));
-    }
+    push_pressure_fill(press, &mut classes, &mut style);
     rsx! {
         div {
             class: "{classes}",
@@ -535,6 +520,21 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
             span { class: "tb-label", "{label}" }
             {modal}
         }
+    }
+}
+
+/// The lit-face inline style for Lighting mode: the cap face takes the key's
+/// colour, with a dark, subtly-lifted legend that stays legible on any hue.
+fn lit_face_style(c: &str) -> String {
+    format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
+}
+
+/// Live pressure: fill the cap's cloned `.pressed::after` overlay from the
+/// bottom. `--press` is the fill height as a percentage of 0..255.
+fn push_pressure_fill(press: Option<u8>, classes: &mut String, style: &mut String) {
+    if let Some(v) = press {
+        classes.push_str(" pressed");
+        style.push_str(&format!("--press:{:.1}%;", v as f32 / 255.0 * 100.0));
     }
 }
 
@@ -566,7 +566,7 @@ fn lit_color(s: &crate::model::AppState, key: KeyId) -> String {
                 KeyId::Grid(g) => g as usize,
                 _ => return "#101418".into(),
             };
-            frame.get(idx).copied().map(solid).unwrap_or_else(|| "#101418".into())
+            frame.get(idx).copied().map_or_else(|| "#101418".into(), solid)
         }
         Effect::Spectrum | Effect::Wave { .. } => {
             // Spread a hue across every input for a believable preview.

@@ -4,13 +4,12 @@
 //! and a right-aligned "New profile" button; below it a `.list` of `.profile-row`
 //! (status | name | link | kebab), one per profile. The old master-detail
 //! settings card is gone — name editing, per-app linking, and profile actions all
-//! live inline on the row. `selected_profile_edit` (a model field) is no longer
-//! read; row interactions are name-input / link / kebab only.
+//! live inline on the row (name-input / link / kebab only).
 
 use dioxus::prelude::*;
 
-use crate::components::Switch;
-use crate::model::ProfileSummary;
+use crate::components::{PageHead, Switch};
+use crate::model::{adjust_index_after_remove, unique_name, ProfileSummary};
 use crate::use_store;
 
 #[component]
@@ -21,7 +20,7 @@ pub fn Profiles() -> Element {
     let active_profile = s.active_profile;
     let offline = s.offline;
     // Auto-switch is a GLOBAL/per-device setting carried in DaemonStatus.
-    let auto_switch = s.status.as_ref().map(|st| st.auto_switch).unwrap_or(false);
+    let auto_switch = s.status.as_ref().is_some_and(|st| st.auto_switch);
     // The configured default profile (compared by NAME); now populated.
     let default_profile = s
         .status
@@ -34,7 +33,7 @@ pub fn Profiles() -> Element {
     let mut menu_open = use_signal::<Option<usize>>(|| None);
     let mut link_editing = use_signal::<Option<usize>>(|| None);
     // Which row is being renamed — drives the debounced-rename FREEZE below and
-    // the visual edit state. Repurposes the old `selected_profile_edit` role.
+    // the visual edit state.
     let mut editing = use_signal::<Option<usize>>(|| None);
 
     // The daemon-known name of the row being renamed, for the debounced rename
@@ -63,11 +62,9 @@ pub fn Profiles() -> Element {
     }));
 
     rsx! {
-        div { class: "page-head",
-            h1 { class: "page-title", "Profiles" }
-            p { class: "page-sub",
-                "Per-profile key bindings, calibration, and lighting. A profile activates automatically when its linked application comes into focus."
-            }
+        PageHead {
+            title: "Profiles",
+            sub: "Per-profile key bindings, calibration, and lighting. A profile activates automatically when its linked application comes into focus.",
         }
 
         // ── Thin toolbar: global auto-switch + offline note + New profile ─────
@@ -98,7 +95,7 @@ pub fn Profiles() -> Element {
                     // De-dupe the name so every daemon op (which addresses BY NAME)
                     // stays unambiguous and the DEFAULT badge can't double-paint.
                     let mut w = store.write();
-                    let name = unique_name("New Profile", &w.profiles);
+                    let name = unique_name("New Profile", |n| w.profiles.iter().any(|p| p.name == n));
                     w.profiles.push(ProfileSummary {
                         name: name.clone(),
                         linked_app: None,
@@ -196,7 +193,7 @@ pub fn Profiles() -> Element {
                                         class: "text-input",
                                         autofocus: true,
                                         placeholder: "app id / window class, e.g. cs2.exe",
-                                        value: linked.clone().unwrap_or_default(),
+                                        value: linked.unwrap_or_default(),
                                         onchange: move |e| {
                                             let v = e.value();
                                             let app = if v.trim().is_empty() { None } else { Some(v.trim().to_string()) };
@@ -211,7 +208,7 @@ pub fn Profiles() -> Element {
                                         },
                                         onfocusout: move |_| link_editing.set(None),
                                     }
-                                } else if let Some(app) = linked.clone() {
+                                } else if let Some(app) = linked {
                                     // A linked app: show a chip with a clear (x).
                                     // Dimmed + click-to-enable when auto-switch is off.
                                     if auto_switch {
@@ -317,7 +314,7 @@ pub fn Profiles() -> Element {
                                             onclick: move |_| {
                                                 menu_open.set(None);
                                                 let mut w = store.write();
-                                                let copy = unique_name(&format!("{name_dup} (copy)"), &w.profiles);
+                                                let copy = unique_name(&format!("{name_dup} (copy)"), |n| w.profiles.iter().any(|p| p.name == n));
                                                 w.profiles.push(ProfileSummary {
                                                     name: copy.clone(),
                                                     linked_app: None,
@@ -359,22 +356,7 @@ pub fn Profiles() -> Element {
                                                     .unwrap_or_default();
                                                 w.profiles.remove(i);
                                                 let new_len = w.profiles.len();
-                                                // Three-case index fix-up: a delete BELOW the
-                                                // tracked index shifts it down by one, so an
-                                                // overflow-only clamp would leave it pointing at
-                                                // the wrong (shifted) profile and desynced from
-                                                // the loaded body. new_len >= 1 here (the guard
-                                                // above refuses to empty the list).
-                                                if i < w.active_profile {
-                                                    w.active_profile -= 1;
-                                                } else if w.active_profile >= new_len {
-                                                    w.active_profile = new_len - 1;
-                                                }
-                                                if i < w.selected_profile_edit {
-                                                    w.selected_profile_edit -= 1;
-                                                } else if w.selected_profile_edit >= new_len {
-                                                    w.selected_profile_edit = new_len - 1;
-                                                }
+                                                adjust_index_after_remove(&mut w.active_profile, i, new_len);
                                                 drop(w);
                                                 crate::ipc::delete_profile(store, n);
                                             },
@@ -389,21 +371,6 @@ pub fn Profiles() -> Element {
             }
         }
     }
-}
-
-/// Pick a profile name that doesn't collide with an existing one. Returns `base`
-/// if free, else appends " 2", " 3", … until unique. Profiles are addressed BY
-/// NAME on the daemon, so colliding names make rename/delete/set-default
-/// ambiguous (and double-paint the DEFAULT badge) — de-dupe on create.
-fn unique_name(base: &str, profiles: &[ProfileSummary]) -> String {
-    let taken = |n: &str| profiles.iter().any(|p| p.name == n);
-    if !taken(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|i| format!("{base} {i}"))
-        .find(|n| !taken(n))
-        .unwrap_or_else(|| base.to_string())
 }
 
 /// Optimistically flip auto-switch ON and push to the daemon. Called when a

@@ -1,6 +1,18 @@
-//! Small shared form controls used by the inspector panels.
+//! Small shared widgets: the page header plus form controls used by the
+//! inspector panels.
 
 use dioxus::prelude::*;
+
+/// The standard screen header: title + one-line subtitle.
+#[component]
+pub fn PageHead(title: &'static str, sub: &'static str) -> Element {
+    rsx! {
+        div { class: "page-head",
+            h1 { class: "page-title", "{title}" }
+            p { class: "page-sub", "{sub}" }
+        }
+    }
+}
 
 /// A labelled range slider with a monospace value readout.
 #[component]
