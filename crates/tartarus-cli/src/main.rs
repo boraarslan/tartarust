@@ -134,7 +134,7 @@ fn main() -> Result<()> {
 }
 
 async fn socket_command(cmd: Cmd) -> Result<()> {
-    let socket = socket_path();
+    let socket = tartarus_ipc::socket_path();
     match cmd {
         Cmd::Ping => {
             print_response(send(&socket, &Request::Ping).await?);
@@ -278,15 +278,6 @@ async fn send(socket: &Path, request: &Request) -> Result<Response> {
     match reader.next_line().await? {
         Some(resp) => Ok(serde_json::from_str(&resp)?),
         None => bail!("daemon closed the connection without replying"),
-    }
-}
-
-/// The socket path, overridable via `RUSTY_TARTARUS_SOCKET` (matches the daemon).
-fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("RUSTY_TARTARUS_SOCKET") {
-        PathBuf::from(p)
-    } else {
-        tartarus_ipc::default_socket_path()
     }
 }
 

@@ -878,8 +878,10 @@ fn key_name(code: KeyCode) -> String {
     format!("{code:?}")
 }
 
-/// Parse an evdev name into a key code; `None` if unknown.
-fn parse_key(name: &str) -> Option<KeyCode> {
+/// Parse an evdev name into a key code; `None` if unknown. The single parse
+/// authority for the crate: macro steps and analog key names validate exactly
+/// like bind names.
+pub(crate) fn parse_key(name: &str) -> Option<KeyCode> {
     name.parse::<KeyCode>().ok()
 }
 

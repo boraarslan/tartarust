@@ -31,9 +31,18 @@ pub const PROTOCOL_VERSION: u32 = 0;
 /// Default control-socket path, under `$XDG_RUNTIME_DIR` (falls back to `/tmp`).
 pub fn default_socket_path() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     runtime.join("rusty-tartarus.sock")
+}
+
+/// The control-socket path every client resolves through: [`default_socket_path`],
+/// overridable via `RUSTY_TARTARUS_SOCKET` (tests / multiple instances). The
+/// daemon, CLI, and UI all use this one function so they can never disagree.
+pub fn socket_path() -> PathBuf {
+    match std::env::var_os("RUSTY_TARTARUS_SOCKET") {
+        Some(p) => PathBuf::from(p),
+        None => default_socket_path(),
+    }
 }
 
 /// A client → daemon request.

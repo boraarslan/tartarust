@@ -26,7 +26,6 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tartarus_protocol::report::Status;
 use tartarus_protocol::{RazerReport, REPORT_SIZE};
 
 use crate::discover::discover_control_node;
@@ -247,11 +246,6 @@ fn check_get_feature_len(count: nix::libc::c_int) -> Result<(), HidError> {
     Ok(())
 }
 
-/// Re-export so callers don't need to reach into the protocol crate for the
-/// success predicate when interpreting a raw status.
-pub fn status_is_success(status: u8) -> bool {
-    Status::from_u8(status).map(Status::is_success).unwrap_or(false)
-}
 
 #[cfg(test)]
 mod tests {

@@ -77,8 +77,6 @@ pub const DEFAULT_ACTUATION_POINT: u8 = 0x60;
 /// Default hysteresis margin: how far below the actuation point pressure must
 /// fall to register a release. Prevents chatter around the threshold.
 pub const DEFAULT_HYSTERESIS: u8 = 0x10;
-/// Default deeper second-actuation point for dual-step keys (`~0xC0`).
-pub const DEFAULT_SECOND_ACTUATION_POINT: u8 = 0xC0;
 
 /// Analog actuation configuration: a per-byte-index actuation map plus the loop
 /// poll cadence. Only used when `input_mode = Analog`.

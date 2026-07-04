@@ -11,7 +11,7 @@
 //! the synchronous remap engine and the OS reader/output/device threads.
 
 use std::fs::{File, TryLockError};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::Sender as StdSender;
 use std::time::Duration;
 
@@ -279,33 +279,3 @@ pub fn cleanup(path: &Path) {
     }
 }
 
-/// A small client used by the CLI to talk to the daemon: connect, send one
-/// request, read one response. Kept here so the wire framing lives in one place.
-pub async fn request_once(socket: &Path, request: &Request) -> Result<Response> {
-    let stream = UnixStream::connect(socket)
-        .await
-        .with_context(|| format!("connecting to daemon at {}", socket.display()))?;
-    let (read_half, mut write_half) = stream.into_split();
-    let mut line = serde_json::to_string(request).context("serializing request")?;
-    line.push('\n');
-    write_half.write_all(line.as_bytes()).await?;
-    write_half.flush().await?;
-
-    let mut reader = BufReader::new(read_half).lines();
-    match reader.next_line().await.context("reading response")? {
-        Some(resp_line) => {
-            serde_json::from_str::<Response>(&resp_line).context("parsing response")
-        }
-        None => anyhow::bail!("daemon closed the connection without replying"),
-    }
-}
-
-/// The socket path, overridable via `RUSTY_TARTARUS_SOCKET` for tests / multi
-/// instances.
-pub fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("RUSTY_TARTARUS_SOCKET") {
-        PathBuf::from(p)
-    } else {
-        tartarus_ipc::default_socket_path()
-    }
-}

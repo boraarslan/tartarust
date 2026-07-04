@@ -120,7 +120,7 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
         .enable_all()
         .build()
         .context("building tokio runtime")?;
-    let socket = ipc_server::socket_path();
+    let socket = tartarus_ipc::socket_path();
     // `_socket_lock` is the single-instance startup lock; it must stay alive for
     // the daemon's whole lifetime (the kernel releases it on process exit).
     let (listener, _socket_lock) = rt

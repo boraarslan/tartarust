@@ -11,8 +11,6 @@
 //! never fatal**: the UI keeps its last-known/mock state and shows the offline
 //! badge. See [`load_state`] (graceful) and [`send`] (returns `Result`).
 
-use std::path::PathBuf;
-
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -20,14 +18,7 @@ use tartarus_ipc::{AnalogState, Request, Response};
 
 use crate::model::{AppState, Macro};
 
-/// The daemon socket path (env override matches the CLI + daemon).
-pub fn socket_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("RUSTY_TARTARUS_SOCKET") {
-        PathBuf::from(p)
-    } else {
-        tartarus_ipc::default_socket_path()
-    }
-}
+use tartarus_ipc::socket_path;
 
 /// Connect, send one request, read one response. `Err` on any I/O / decode
 /// failure — callers treat that as "daemon offline" and keep prior state.

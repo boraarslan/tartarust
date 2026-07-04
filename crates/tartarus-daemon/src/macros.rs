@@ -47,24 +47,11 @@ pub fn lower(steps: &[MacroStep]) -> Vec<MacroAction> {
 }
 
 fn parse(name: &str) -> Option<evdev::KeyCode> {
-    match name.parse() {
-        Ok(code) => Some(code),
-        Err(_) => {
-            tracing::warn!(%name, "macro step references unknown key name; skipping");
-            None
-        }
+    let code = crate::engine::parse_key(name);
+    if code.is_none() {
+        tracing::warn!(%name, "macro step references unknown key name; skipping");
     }
-}
-
-/// Total wall-clock time a macro spends sleeping (sum of its delays).
-pub fn total_delay(actions: &[MacroAction]) -> Duration {
-    actions
-        .iter()
-        .filter_map(|a| match a {
-            MacroAction::Delay(d) => Some(*d),
-            MacroAction::Emit(_) => None,
-        })
-        .sum()
+    code
 }
 
 #[cfg(test)]
@@ -104,7 +91,17 @@ mod tests {
         ];
         let actions = lower(&steps);
         assert_eq!(actions.len(), 4);
-        assert_eq!(total_delay(&actions), Duration::from_millis(80));
+        let delays: Vec<_> = actions
+            .iter()
+            .filter_map(|a| match a {
+                MacroAction::Delay(d) => Some(*d),
+                MacroAction::Emit(_) => None,
+            })
+            .collect();
+        assert_eq!(
+            delays,
+            vec![Duration::from_millis(50), Duration::from_millis(30)]
+        );
     }
 
     #[test]

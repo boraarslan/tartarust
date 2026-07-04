@@ -48,15 +48,6 @@ pub struct DeviceNode {
     pub interface: Option<u8>,
 }
 
-impl DeviceNode {
-    /// True if this is the 6-key-rollover **boot** keyboard interface (iface 0).
-    /// When a non-boot keyboard node is also present, the daemon skips this one so
-    /// simultaneous key presses aren't capped at 6 (and to avoid double-emitting
-    /// the same key on both keyboard nodes).
-    pub fn is_boot_keyboard(&self) -> bool {
-        self.kind == NodeKind::Keyboard && self.interface == Some(BOOT_INTERFACE)
-    }
-}
 
 /// The grab decision for a set of discovered nodes — which keyboard nodes the
 /// daemon should attempt to grab, and whether to warn that rollover may be capped.

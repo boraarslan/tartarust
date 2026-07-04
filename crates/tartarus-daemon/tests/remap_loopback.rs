@@ -264,7 +264,7 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
     // 5. Wire the REAL pipeline: reader -> engine -> output sink.
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn(); // no real device; lighting no-ops
-    let _reader = pipeline::spawn_reader(node, engine_tx.clone());
+    let _reader = pipeline::spawn_reader(node, engine_tx);
     let engine = Engine::new(test_config());
     let _engine = pipeline::spawn_engine(
         engine,
@@ -367,7 +367,7 @@ fn unplug_mid_hold_releases_held_keys() {
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn();
-    let _reader = pipeline::spawn_reader(node, engine_tx.clone());
+    let _reader = pipeline::spawn_reader(node, engine_tx);
     let engine = Engine::new(test_config()); // KEY_A -> KEY_B
     let _engine = pipeline::spawn_engine(
         engine,
@@ -470,7 +470,7 @@ fn nkro_eight_simultaneous_keys_pass_through() {
     // 5. Wire the REAL pipeline with a passthrough config.
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn();
-    let _reader = pipeline::spawn_reader(node, engine_tx.clone());
+    let _reader = pipeline::spawn_reader(node, engine_tx);
     let engine = Engine::new(passthrough_config());
     let _engine = pipeline::spawn_engine(
         engine,

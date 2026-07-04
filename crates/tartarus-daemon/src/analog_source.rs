@@ -55,6 +55,7 @@ use evdev::KeyCode;
 use tartarus_hid::AnalogReader;
 use tartarus_protocol::{AnalogFrame, ANALOG_KEY_COUNT};
 
+use crate::engine::parse_key;
 use crate::ipc_server::EngineMsg;
 use crate::state::{AnalogConfig, AnalogKey};
 
@@ -441,7 +442,7 @@ pub fn spawn(
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), tartarus_hid::HidError>>();
     let thread_stop = stop.clone();
     let thread_armed = armed;
-    let thread_snapshot = snapshot.clone();
+    let thread_snapshot = snapshot;
 
     let join = thread::Builder::new()
         .name("tartarus-analog".into())
@@ -571,11 +572,6 @@ fn run_loop(
     }
 }
 
-/// Parse an evdev name into a key code; `None` if unknown. (Mirrors the engine's
-/// own parse so analog names validate exactly like bind names.)
-fn parse_key(name: &str) -> Option<KeyCode> {
-    name.parse::<KeyCode>().ok()
-}
 
 #[cfg(test)]
 mod tests {
