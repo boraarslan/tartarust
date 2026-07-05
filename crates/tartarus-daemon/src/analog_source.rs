@@ -1,12 +1,23 @@
-//! Analog input source: the DRIVER-mode alternative to the evdev grab.
+//! Analog input source: DRIVER-mode pressure → key events for the grid.
 //!
 //! In analog mode the keypad is switched out of normal HID into DRIVER mode (see
-//! [`tartarus_hid::AnalogReader`]), where it streams raw per-key pressure instead
-//! of keystrokes. This module turns that pressure stream into the SAME
+//! [`tartarus_hid::AnalogReader`]), where the GRID streams raw per-key pressure
+//! instead of keystrokes. This module turns that pressure stream into the SAME
 //! [`EngineMsg::Input`] events the digital reader ([`crate::pipeline::spawn_reader`])
 //! produces — so the engine, binds, Hypershift, and macros all work on top of
-//! analog with zero engine changes. Analog REPLACES the grab (the two are
-//! mutually exclusive: DRIVER mode means there is no normal HID keyboard to grab).
+//! analog with zero engine changes.
+//!
+//! Analog mode is HYBRID, not a replacement for the evdev grab: DRIVER mode
+//! silences only the grid digitally — the thumb-area keys (thumb button =
+//! `KEY_LEFTALT`, thumbpad arrows) keep emitting classic HID reports on the boot
+//! keyboard interface. So the daemon ALSO grabs every keyboard node and reads
+//! the boot one (`main.rs`'s analog arm, [`crate::input::plan_grabs_analog`]);
+//! this source and those digital readers COEXIST, feeding the same engine
+//! channel — lifecycle code (unplug/POLLERR teardown, shutdown) must account for
+//! both. The keys this source synthesizes are published in a shared
+//! [`ClaimedKeys`] set the digital readers drop, so a key emitting on both paths
+//! (the spacebar: analog byte 19 and possibly a digital boot-report key) never
+//! double-feeds the engine.
 //!
 //! Two layers, deliberately split so the actuation logic is unit-testable with
 //! no hardware:
@@ -45,15 +56,16 @@
 //! path — where Drop is skipped — the daemon's panic hook calls
 //! [`tartarus_hid::restore_normal_best_effort`] before aborting.
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use evdev::KeyCode;
 use tartarus_hid::AnalogReader;
-use tartarus_protocol::{AnalogFrame, ANALOG_KEY_COUNT};
+use tartarus_protocol::{ANALOG_KEY_COUNT, AnalogFrame};
 
 use crate::engine::parse_key;
 use crate::ipc_server::EngineMsg;
@@ -68,6 +80,19 @@ pub struct ActuationUpdate {
     /// The new settings for that key.
     pub key: AnalogKey,
 }
+
+/// The key codes the analog source CURRENTLY synthesizes from pressure, shared
+/// with the hybrid-mode digital readers, which drop those codes (see
+/// [`crate::pipeline::spawn_reader`]) so a key emitting on both paths never
+/// double-feeds the engine.
+///
+/// The set is LIVE, not startup-fixed: `SetActuation` can change or remove a
+/// `second_action` key name at runtime, and a stale set would keep dropping a
+/// digital key nothing synthesizes anymore — killing it until restart. Single
+/// writer: this module ([`spawn`] seeds it from the built [`Actuator`] before
+/// any reader exists; the run loop republishes [`Actuator::claimed_codes`] after
+/// every applied update). Readers take the lock only on key-DOWN edges.
+pub type ClaimedKeys = Arc<RwLock<HashSet<u16>>>;
 
 /// A snapshot of live analog state shared between the source thread (writer) and
 /// the engine/IPC handler (reader), for `GetAnalogState`.
@@ -260,12 +285,19 @@ fn resolve_actuator(index: usize, key: &AnalogKey) -> Option<KeyActuator> {
                 })
             }
             None => {
-                tracing::warn!(name, index, "analog second_action has unknown evdev name; ignoring second step");
+                tracing::warn!(
+                    name,
+                    index,
+                    "analog second_action has unknown evdev name; ignoring second step"
+                );
                 None
             }
         },
         (Some(_), None) => {
-            tracing::warn!(index, "analog key sets second_actuation_point without second_action; ignoring second step");
+            tracing::warn!(
+                index,
+                "analog key sets second_actuation_point without second_action; ignoring second step"
+            );
             None
         }
         _ => None,
@@ -342,6 +374,25 @@ impl Actuator {
             self.keys.push((index, next));
         }
         releases
+    }
+
+    /// The key codes this actuator can synthesize RIGHT NOW: every configured
+    /// entry's primary code plus its second-step code where a valid second step
+    /// exists. This is the single authority the hybrid drop set ([`ClaimedKeys`])
+    /// is built from. Deriving from the BUILT actuator — not the raw config — is
+    /// load-bearing: the set inherits every inclusion check
+    /// [`Actuator::from_config`]/[`Actuator::apply_update`] perform, so an entry
+    /// the actuator skipped (non-numeric or out-of-range index, unknown key
+    /// name, `second_action` without its `second_actuation_point`) claims
+    /// nothing, and its digital events keep flowing instead of being dropped
+    /// with no analog replacement (a dead key).
+    pub fn claimed_codes(&self) -> HashSet<u16> {
+        self.keys
+            .iter()
+            .flat_map(|(_, k)| {
+                std::iter::once(k.primary.0).chain(k.second.as_ref().map(|s| s.key.0))
+            })
+            .collect()
     }
 
     /// Run one frame through every configured key, returning the `(KeyCode,
@@ -425,16 +476,30 @@ impl Drop for AnalogSource {
 /// `snapshot` is the live pressure/active view the IPC handler reads for
 /// `GetAnalogState`; the loop writes each frame into it and sets `active` for the
 /// source's lifetime. `updates` carries live `SetActuation` edits the loop drains
-/// each poll and applies to the running actuator in place.
+/// each poll and applies to the running actuator in place. `claimed` is the
+/// shared drop set for the hybrid digital readers; it is seeded here (before the
+/// worker even starts) and republished by the loop after every applied update.
 pub fn spawn(
     config: AnalogConfig,
     tx: Sender<EngineMsg>,
     armed: &'static AtomicBool,
     snapshot: Arc<AnalogSnapshot>,
     updates: Receiver<ActuationUpdate>,
+    claimed: ClaimedKeys,
 ) -> Result<AnalogSource, tartarus_hid::HidError> {
     let stop = Arc::new(AtomicBool::new(false));
     let poll_timeout = Duration::from_millis(config.poll_interval_ms.max(1));
+
+    // Build the actuator HERE (caller's thread), not on the worker: the claimed
+    // set must be seeded before `spawn` returns, because `main` spawns the
+    // digital readers right after — a reader must never run against an unseeded
+    // set (it would forward a digital dupe of an analog key). Seeding from the
+    // BUILT actuator makes the set exactly mirror what can be synthesized; see
+    // [`Actuator::claimed_codes`].
+    let mut actuator = Actuator::from_config(&config);
+    if let Ok(mut set) = claimed.write() {
+        *set = actuator.claimed_codes();
+    }
 
     // Open the reader on a oneshot so `spawn` returns the open Result while the
     // reader stays owned by the worker thread (the ownership is what guarantees
@@ -463,7 +528,6 @@ pub fn spawn(
             };
             tracing::info!(node = %reader.input_path().display(), "analog source running (DRIVER mode)");
 
-            let mut actuator = Actuator::from_config(&config);
             run_loop(
                 &mut reader,
                 &mut actuator,
@@ -472,6 +536,7 @@ pub fn spawn(
                 poll_timeout,
                 &thread_snapshot,
                 &updates,
+                &claimed,
             );
 
             // Clear `active` so a post-shutdown GetAnalogState reads inactive.
@@ -514,8 +579,9 @@ pub fn spawn(
 
 /// The poll → actuate → forward loop. Extracted so it reads as one unit; runs
 /// until `stop` is set, the engine channel closes, or the reader errors. Each
-/// iteration also drains live `SetActuation` updates and publishes the latest
-/// frame into `snapshot` for `GetAnalogState`.
+/// iteration also drains live `SetActuation` updates (republishing `claimed`
+/// when any applied) and publishes the latest frame into `snapshot` for
+/// `GetAnalogState`.
 #[allow(clippy::too_many_arguments)]
 fn run_loop(
     reader: &mut AnalogReader,
@@ -525,16 +591,31 @@ fn run_loop(
     poll_timeout: Duration,
     snapshot: &AnalogSnapshot,
     updates: &Receiver<ActuationUpdate>,
+    claimed: &ClaimedKeys,
 ) {
     while !stop.load(Ordering::SeqCst) {
         // Apply any live actuation edits before this poll. A threshold change can
         // orphan a held step (different key / removed second step); forward those
         // releases so nothing sticks on the sink.
+        let mut applied_any = false;
         while let Ok(update) = updates.try_recv() {
             for (code, value) in actuator.apply_update(update.index, &update.key) {
                 if tx.send(EngineMsg::Input(code.0, value)).is_err() {
                     return; // engine gone
                 }
+            }
+            applied_any = true;
+        }
+        if applied_any {
+            // Republish the claimed-key drop set: `SetActuation` CAN change or
+            // remove a `second_action` key name, and the digital readers must
+            // stop dropping a code the actuator no longer synthesizes (else that
+            // key is dead until restart) — and start dropping a newly claimed
+            // one. Recomputing from the actuator (the authority) is idempotent,
+            // so a rejected/no-op update republishing is harmless. The readers'
+            // down-edge latching keeps a key held ACROSS this swap consistent.
+            if let Ok(mut set) = claimed.write() {
+                *set = actuator.claimed_codes();
             }
         }
 
@@ -571,7 +652,6 @@ fn run_loop(
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -640,7 +720,7 @@ mod tests {
     fn falling_below_release_emits_up_with_hysteresis() {
         let mut a = Actuator::from_config(&one_key(5, "KEY_Q"));
         a.on_frame(&frame_at(5, 0xFF)); // press fully -> down
-                                        // Drop to just BELOW actuation but ABOVE release: still held (hysteresis).
+        // Drop to just BELOW actuation but ABOVE release: still held (hysteresis).
         let between = DEFAULT_ACTUATION_POINT - 1; // above release (act - 0x10)
         assert!(
             a.on_frame(&frame_at(5, between)).is_empty(),
@@ -666,9 +746,10 @@ mod tests {
         for _ in 0..10 {
             // Within [release_point, actuation_point): no events either way.
             assert!(a.on_frame(&frame_at(5, DEFAULT_ACTUATION_POINT)).is_empty());
-            assert!(a
-                .on_frame(&frame_at(5, DEFAULT_ACTUATION_POINT - 1))
-                .is_empty());
+            assert!(
+                a.on_frame(&frame_at(5, DEFAULT_ACTUATION_POINT - 1))
+                    .is_empty()
+            );
         }
     }
 
@@ -739,8 +820,8 @@ mod tests {
     fn fast_release_drops_both_steps_in_one_frame() {
         let mut a = Actuator::from_config(&dual_step(5, "KEY_Q", "KEY_LEFTSHIFT"));
         a.on_frame(&frame_at(5, 0xFF)); // both down
-                                        // One frame straight to zero: both release this frame, second before primary
-                                        // is fine — order is "second step checked after primary" so primary-up first.
+        // One frame straight to zero: both release this frame, second before primary
+        // is fine — order is "second step checked after primary" so primary-up first.
         let out = a.on_frame(&frame_at(5, 0x00));
         assert!(out.contains(&(KeyCode::KEY_Q, VALUE_UP)));
         assert!(out.contains(&(KeyCode::KEY_LEFTSHIFT, VALUE_UP)));
@@ -936,10 +1017,7 @@ mod tests {
         // Any real pressure crosses both clamped points (1)...
         assert_eq!(
             a.on_frame(&frame_at(5, 0x40)),
-            vec![
-                (KeyCode::KEY_Q, VALUE_DOWN),
-                (KeyCode::KEY_W, VALUE_DOWN)
-            ]
+            vec![(KeyCode::KEY_Q, VALUE_DOWN), (KeyCode::KEY_W, VALUE_DOWN)]
         );
         // ...and a full release (pressure 0 < clamped release 1) lets go again.
         assert_eq!(
@@ -1066,6 +1144,103 @@ mod tests {
         let mut a = Actuator::from_config(&one_key(5, "KEY_Q"));
         assert!(a.apply_update(99, &key_cfg("KEY_W", 0x60, 0x50)).is_empty());
         assert_eq!(a.keys.len(), 1); // unchanged
+    }
+
+    // ---- claimed_codes: the hybrid drop-set authority ----
+
+    #[test]
+    fn claimed_codes_covers_primary_and_valid_second_action() {
+        let a = Actuator::from_config(&dual_step(5, "KEY_Q", "KEY_LEFTSHIFT"));
+        let set = a.claimed_codes();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&KeyCode::KEY_Q.0));
+        assert!(set.contains(&KeyCode::KEY_LEFTSHIFT.0));
+    }
+
+    /// Every entry the actuator SKIPS must claim nothing: a claimed-but-never-
+    /// synthesized code would make the hybrid digital readers drop a key that
+    /// has no analog replacement — a silently dead key (review finding). The
+    /// adversarial cases: `second_action` without `second_actuation_point` (the
+    /// thumb button's `KEY_LEFTALT` would go dead — its ONLY emission path in
+    /// analog mode is the digital boot node), an out-of-range index, a
+    /// non-numeric index, and unparseable names.
+    #[test]
+    fn claimed_codes_excludes_entries_the_actuator_skips() {
+        let mut keys = BTreeMap::new();
+        // second_action WITHOUT its point: second step ignored -> KEY_LEFTALT
+        // must NOT be claimed (KEY_Q still is).
+        keys.insert(
+            "0".to_string(),
+            AnalogKey {
+                key: "KEY_Q".into(),
+                actuation_point: 0x60,
+                release_point: 0x50,
+                second_actuation_point: None,
+                second_action: Some("KEY_LEFTALT".into()),
+            },
+        );
+        // Out-of-range index: whole entry skipped -> KEY_SPACE not claimed.
+        keys.insert("99".to_string(), key_cfg("KEY_SPACE", 0x60, 0x50));
+        // Non-numeric index: whole entry skipped -> KEY_A not claimed.
+        keys.insert("grid".to_string(), key_cfg("KEY_A", 0x60, 0x50));
+        // Unparseable primary: whole entry skipped.
+        keys.insert("1".to_string(), key_cfg("KEY_NOPE", 0x60, 0x50));
+        // Unparseable second_action: second step ignored -> only KEY_B claimed.
+        keys.insert(
+            "2".to_string(),
+            AnalogKey {
+                key: "KEY_B".into(),
+                actuation_point: 0x60,
+                release_point: 0x50,
+                second_actuation_point: Some(0xC0),
+                second_action: Some("KEY_ALSO_NOPE".into()),
+            },
+        );
+        let a = Actuator::from_config(&AnalogConfig {
+            poll_interval_ms: 50,
+            keys,
+        });
+        let set = a.claimed_codes();
+        assert_eq!(
+            set,
+            HashSet::from([KeyCode::KEY_Q.0, KeyCode::KEY_B.0]),
+            "only synthesizable codes may be claimed; got {set:?}"
+        );
+    }
+
+    /// The claimed set must track live `SetActuation` edits (the run loop
+    /// republishes `claimed_codes` after each applied update): changing or
+    /// removing a `second_action` un-claims the old code, and adding one claims
+    /// the new code.
+    #[test]
+    fn claimed_codes_follows_apply_update() {
+        let mut a = Actuator::from_config(&dual_step(5, "KEY_Q", "KEY_LEFTALT"));
+        assert!(a.claimed_codes().contains(&KeyCode::KEY_LEFTALT.0));
+
+        // Swap the second action LEFTALT -> LEFTSHIFT.
+        a.apply_update(
+            5,
+            &AnalogKey {
+                key: "KEY_Q".into(),
+                actuation_point: 0x60,
+                release_point: 0x50,
+                second_actuation_point: Some(0xC0),
+                second_action: Some("KEY_LEFTSHIFT".into()),
+            },
+        );
+        let set = a.claimed_codes();
+        assert!(
+            !set.contains(&KeyCode::KEY_LEFTALT.0),
+            "old second unclaimed"
+        );
+        assert!(
+            set.contains(&KeyCode::KEY_LEFTSHIFT.0),
+            "new second claimed"
+        );
+
+        // Remove the second step entirely: only the primary stays claimed.
+        a.apply_update(5, &key_cfg("KEY_Q", 0x60, 0x50));
+        assert_eq!(a.claimed_codes(), HashSet::from([KeyCode::KEY_Q.0]));
     }
 
     #[test]

@@ -38,7 +38,7 @@ pub enum KeyId {
     Wheel(WheelDir),
     /// The large thumb / spacebar actuator.
     Space,
-    /// The analog thumb button (emits `KEY_LEFTALT`).
+    /// The thumb button (emits `KEY_LEFTALT`); digital-only, no analog pressure byte.
     ThumbButton,
 }
 
@@ -82,7 +82,10 @@ impl ThumbDir {
     /// True for the four diagonal directions (NW/NE/SW/SE), which a `Four`-way
     /// [`ThumbAxisMode`] collapses away.
     pub fn is_diagonal(&self) -> bool {
-        matches!(self, ThumbDir::NW | ThumbDir::NE | ThumbDir::SW | ThumbDir::SE)
+        matches!(
+            self,
+            ThumbDir::NW | ThumbDir::NE | ThumbDir::SW | ThumbDir::SE
+        )
     }
 }
 
@@ -165,10 +168,25 @@ pub const GRID_LEGENDS: [&str; 19] = [
 /// Default evdev name each grid position emits. Matches the hardware-confirmed
 /// analog byte map exactly: byte i == grid i for 0..18.
 pub const GRID_EVDEV: [&str; 19] = [
-    "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", //
-    "KEY_TAB", "KEY_Q", "KEY_W", "KEY_E", "KEY_R", //
-    "KEY_CAPSLOCK", "KEY_A", "KEY_S", "KEY_D", "KEY_F", //
-    "KEY_LEFTSHIFT", "KEY_Z", "KEY_X", "KEY_C",
+    "KEY_1",
+    "KEY_2",
+    "KEY_3",
+    "KEY_4",
+    "KEY_5", //
+    "KEY_TAB",
+    "KEY_Q",
+    "KEY_W",
+    "KEY_E",
+    "KEY_R", //
+    "KEY_CAPSLOCK",
+    "KEY_A",
+    "KEY_S",
+    "KEY_D",
+    "KEY_F", //
+    "KEY_LEFTSHIFT",
+    "KEY_Z",
+    "KEY_X",
+    "KEY_C",
 ];
 
 /// Per-row cap counts for the keypad renderer (rows of 5/5/5/4). Total = 19.
@@ -456,17 +474,50 @@ static MOUSE: &[KeyEntry] = &[
 /// single source of truth: [`key_label`] and the picker's [`search_index`] both
 /// derive from it.
 pub static KEY_CATALOG: &[KeyCategory] = &[
-    KeyCategory { name: "Letters", keys: LETTERS },
-    KeyCategory { name: "Numbers", keys: NUMBERS },
-    KeyCategory { name: "Function", keys: FUNCTION },
-    KeyCategory { name: "Modifiers", keys: MODIFIERS },
-    KeyCategory { name: "Navigation", keys: NAVIGATION },
-    KeyCategory { name: "Editing", keys: EDITING },
-    KeyCategory { name: "Symbols", keys: SYMBOLS },
-    KeyCategory { name: "Numpad", keys: NUMPAD },
-    KeyCategory { name: "Media", keys: MEDIA },
-    KeyCategory { name: "System", keys: SYSTEM },
-    KeyCategory { name: "Mouse", keys: MOUSE },
+    KeyCategory {
+        name: "Letters",
+        keys: LETTERS,
+    },
+    KeyCategory {
+        name: "Numbers",
+        keys: NUMBERS,
+    },
+    KeyCategory {
+        name: "Function",
+        keys: FUNCTION,
+    },
+    KeyCategory {
+        name: "Modifiers",
+        keys: MODIFIERS,
+    },
+    KeyCategory {
+        name: "Navigation",
+        keys: NAVIGATION,
+    },
+    KeyCategory {
+        name: "Editing",
+        keys: EDITING,
+    },
+    KeyCategory {
+        name: "Symbols",
+        keys: SYMBOLS,
+    },
+    KeyCategory {
+        name: "Numpad",
+        keys: NUMPAD,
+    },
+    KeyCategory {
+        name: "Media",
+        keys: MEDIA,
+    },
+    KeyCategory {
+        name: "System",
+        keys: SYSTEM,
+    },
+    KeyCategory {
+        name: "Mouse",
+        keys: MOUSE,
+    },
 ];
 
 /// `evdev name -> label`, built once from [`KEY_CATALOG`].
@@ -486,7 +537,8 @@ fn label_map() -> &'static std::collections::HashMap<&'static str, &'static str>
 /// names not in the catalog (e.g. raw `discover-keys` output).
 pub fn key_label(name: &str) -> String {
     label_map()
-        .get(name).map_or_else(|| pretty_key(name), |l| l.to_string())
+        .get(name)
+        .map_or_else(|| pretty_key(name), |l| l.to_string())
 }
 
 /// Lowercased search haystacks for the picker filter, built once. Each tuple is
@@ -636,39 +688,69 @@ pub fn mock_state() -> AppState {
         Macro {
             name: "Reload + Aim".into(),
             steps: vec![
-                MacroStep::Press { key: "KEY_R".into() },
+                MacroStep::Press {
+                    key: "KEY_R".into(),
+                },
                 MacroStep::Delay { ms: 40 },
-                MacroStep::Release { key: "KEY_R".into() },
+                MacroStep::Release {
+                    key: "KEY_R".into(),
+                },
                 MacroStep::Delay { ms: 120 },
-                MacroStep::Press { key: "BTN_RIGHT".into() },
+                MacroStep::Press {
+                    key: "BTN_RIGHT".into(),
+                },
             ],
         },
         Macro {
             name: "Build Wall".into(),
             steps: vec![
-                MacroStep::Press { key: "KEY_Q".into() },
+                MacroStep::Press {
+                    key: "KEY_Q".into(),
+                },
                 MacroStep::Delay { ms: 20 },
-                MacroStep::Release { key: "KEY_Q".into() },
-                MacroStep::Press { key: "BTN_LEFT".into() },
+                MacroStep::Release {
+                    key: "KEY_Q".into(),
+                },
+                MacroStep::Press {
+                    key: "BTN_LEFT".into(),
+                },
                 MacroStep::Delay { ms: 20 },
-                MacroStep::Release { key: "BTN_LEFT".into() },
+                MacroStep::Release {
+                    key: "BTN_LEFT".into(),
+                },
             ],
         },
         Macro {
             name: "Spam F".into(),
             steps: vec![
-                MacroStep::Press { key: "KEY_F".into() },
+                MacroStep::Press {
+                    key: "KEY_F".into(),
+                },
                 MacroStep::Delay { ms: 30 },
-                MacroStep::Release { key: "KEY_F".into() },
+                MacroStep::Release {
+                    key: "KEY_F".into(),
+                },
             ],
         },
     ];
 
     let profiles = vec![
-        ProfileSummary { name: "default".into(), linked_app: None },
-        ProfileSummary { name: "test".into(), linked_app: Some("cs2.exe".into()) },
-        ProfileSummary { name: "MMO Grind".into(), linked_app: Some("wow.exe".into()) },
-        ProfileSummary { name: "Desktop".into(), linked_app: None },
+        ProfileSummary {
+            name: "default".into(),
+            linked_app: None,
+        },
+        ProfileSummary {
+            name: "test".into(),
+            linked_app: Some("cs2.exe".into()),
+        },
+        ProfileSummary {
+            name: "MMO Grind".into(),
+            linked_app: Some("wow.exe".into()),
+        },
+        ProfileSummary {
+            name: "Desktop".into(),
+            linked_app: None,
+        },
     ];
 
     // Mock macros are local/fully-loaded — mark them all as having bodies.

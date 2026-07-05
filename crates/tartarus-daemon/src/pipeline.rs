@@ -6,6 +6,7 @@
 //! loopback integration test exercises the EXACT same read → resolve → emit code
 //! the daemon runs, rather than a re-implementation.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
 use std::sync::mpsc::Sender;
@@ -13,6 +14,7 @@ use std::thread::{self, JoinHandle};
 
 use evdev::{EventSummary, KeyCode};
 
+use crate::analog_source::ClaimedKeys;
 use crate::device::DeviceHandle;
 use crate::engine::{Command, Engine};
 use crate::input::DeviceNode;
@@ -24,31 +26,75 @@ use crate::state::Config;
 /// engine as [`EngineMsg::Input`]. The thread exits cleanly (no hot-spin) when
 /// the device read errors — e.g. the device is unplugged — or when the engine
 /// channel closes.
-pub fn spawn_reader(mut node: DeviceNode, tx: Sender<EngineMsg>) -> JoinHandle<()> {
+///
+/// `drop_keys` is the per-reader claimed-key filter: a key-DOWN whose code is in
+/// the set is dropped before it is forwarded, and that key's later up/repeat
+/// edges follow the same decision. WHY: in analog mode the keys claimed by
+/// `[analog.keys]` are synthesized by the analog source from pressure; a digital
+/// duplicate of the same key arriving on a grabbed node (the spacebar is the
+/// known candidate — analog byte 19 AND possibly a digital boot-report key) must
+/// not double-feed the engine, where e.g. a macro bind would fire twice per
+/// press. The set is LIVE — `SetActuation` can change or remove a
+/// `second_action` key name, and the analog source republishes its claimed codes
+/// on every such edit (see [`ClaimedKeys`]) — which is exactly why the decision
+/// latches on the down edge: filtering each edge independently against a moving
+/// set could drop the UP of a forwarded DOWN (stuck key on the sink) or forward
+/// an UP the engine never saw go down. Digital mode passes an empty, never-
+/// written set (behavior unchanged; the engine ignores unheld UPs and swallows
+/// repeats either way).
+pub fn spawn_reader(
+    mut node: DeviceNode,
+    tx: Sender<EngineMsg>,
+    drop_keys: ClaimedKeys,
+) -> JoinHandle<()> {
     let path = node.path.clone();
     thread::Builder::new()
         .name("tartarus-reader".into())
-        .spawn(move || loop {
-            match node.device.fetch_events() {
-                Ok(events) => {
-                    for event in events {
-                        if let EventSummary::Key(_, key, value) = event.destructure()
-                            && tx.send(EngineMsg::Input(key.0, value)).is_err()
-                        {
-                            return; // engine gone
+        .spawn(move || {
+            // Keys THIS reader forwarded DOWN and has not yet forwarded UP.
+            // Carries each press's drop decision to its up/repeat edges, so a
+            // live `drop_keys` change mid-hold cannot orphan or duplicate edges.
+            let mut forwarded_down: HashSet<u16> = HashSet::new();
+            loop {
+                match node.device.fetch_events() {
+                    Ok(events) => {
+                        for event in events {
+                            let EventSummary::Key(_, key, value) = event.destructure() else {
+                                continue;
+                            };
+                            let forward = match value {
+                                // Down: consult the live drop set (sole lock site).
+                                1 => {
+                                    let claimed = drop_keys
+                                        .read()
+                                        .map(|set| set.contains(&key.0))
+                                        .unwrap_or(false);
+                                    if !claimed {
+                                        forwarded_down.insert(key.0);
+                                    }
+                                    !claimed
+                                }
+                                // Up: follow the press's decision.
+                                0 => forwarded_down.remove(&key.0),
+                                // Autorepeat (or any exotic value): ditto.
+                                _ => forwarded_down.contains(&key.0),
+                            };
+                            if forward && tx.send(EngineMsg::Input(key.0, value)).is_err() {
+                                return; // engine gone
+                            }
                         }
                     }
-                }
-                Err(err) => {
-                    // A read error means the node went away (unplug) or was
-                    // revoked. Stop this reader; do not spin. The daemon keeps
-                    // serving IPC and its other readers. First, ask the engine to
-                    // release any keys held at this instant, so a key that was
-                    // down when the device vanished doesn't stay stuck on the
-                    // virtual device (no key-up would ever arrive for it).
-                    tracing::error!(path = %path.display(), ?err, "read error; reader stopping");
-                    let _ = tx.send(EngineMsg::ReleaseAll);
-                    return;
+                    Err(err) => {
+                        // A read error means the node went away (unplug) or was
+                        // revoked. Stop this reader; do not spin. The daemon keeps
+                        // serving IPC and its other readers. First, ask the engine to
+                        // release any keys held at this instant, so a key that was
+                        // down when the device vanished doesn't stay stuck on the
+                        // virtual device (no key-up would ever arrive for it).
+                        tracing::error!(path = %path.display(), ?err, "read error; reader stopping");
+                        let _ = tx.send(EngineMsg::ReleaseAll);
+                        return;
+                    }
                 }
             }
         })
@@ -94,8 +140,7 @@ pub fn spawn_engine(
                         // rather than the stale startup cache.
                         if matches!(
                             request,
-                            tartarus_ipc::Request::GetDeviceInfo
-                                | tartarus_ipc::Request::GetStatus
+                            tartarus_ipc::Request::GetDeviceInfo | tartarus_ipc::Request::GetStatus
                         ) {
                             engine.set_device_info(device.query_info());
                         }
@@ -261,6 +306,11 @@ mod tests {
     use super::{mark_dirty_after, marks_dirty};
     use tartarus_ipc::{Layer, Request, Response};
 
+    // NOTE: the hybrid claimed-key drop set is derived from the analog
+    // actuator ([`crate::analog_source::Actuator::claimed_codes`]) and tested
+    // there — the actuator is the single authority for what analog can
+    // synthesize, so the set inherits its validity checks by construction.
+
     /// The dirty mark must depend on BOTH the request type and the apply outcome:
     /// a dirtying request the engine REJECTED (Error) changed no state, so it must
     /// not light the unsaved indicator (review finding).
@@ -276,9 +326,17 @@ mod tests {
         // Accepted (Ack) dirtying edit -> mark dirty.
         assert!(mark_dirty_after(dirties, &Response::Ack));
         // Rejected (Error) dirtying edit -> do NOT mark dirty (no state change).
-        assert!(!mark_dirty_after(dirties, &Response::Error { message: "x".into() }));
+        assert!(!mark_dirty_after(
+            dirties,
+            &Response::Error {
+                message: "x".into()
+            }
+        ));
         // A non-dirtying request never marks dirty, whatever the response.
-        assert!(!mark_dirty_after(marks_dirty(&Request::GetStatus), &Response::Ack));
+        assert!(!mark_dirty_after(
+            marks_dirty(&Request::GetStatus),
+            &Response::Ack
+        ));
     }
 
     /// `marks_dirty` is the daemon's "this edit leaves unsaved state" predicate.
@@ -308,7 +366,9 @@ mod tests {
         // Structural / management edits.
         assert!(marks_dirty(&Request::CreateProfile { name: "p".into() }));
         assert!(marks_dirty(&Request::DeleteProfile { name: "p".into() }));
-        assert!(marks_dirty(&Request::SetDefaultProfile { name: "p".into() }));
+        assert!(marks_dirty(&Request::SetDefaultProfile {
+            name: "p".into()
+        }));
         assert!(marks_dirty(&Request::DeleteMacro { name: "m".into() }));
         assert!(marks_dirty(&Request::SetAutoSwitch { enabled: true }));
 

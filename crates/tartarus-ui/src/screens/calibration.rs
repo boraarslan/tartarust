@@ -30,8 +30,10 @@ use dioxus::prelude::*;
 
 use tartarus_ipc::{AnalogKeyConfig, AnalogState};
 
-use crate::components::{CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, PageHead, Slider, Toggle};
-use crate::model::{pretty_key, KeyId};
+use crate::components::{
+    CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, PageHead, Slider, Toggle,
+};
+use crate::model::{KeyId, pretty_key};
 use crate::use_store;
 
 /// Integer percentage readout for a raw 0..255 pressure value.
@@ -113,7 +115,10 @@ fn Stage(state: Option<AnalogState>) -> Element {
     let mut multi_open = use_signal(|| false);
 
     let keys = state.as_ref().map(|s| s.keys.clone()).unwrap_or_default();
-    let frame = state.as_ref().map(|s| s.pressures.clone()).unwrap_or_default();
+    let frame = state
+        .as_ref()
+        .map(|s| s.pressures.clone())
+        .unwrap_or_default();
 
     // Per-key pressure for the keypad overlay, keyed by evdev name: for each
     // configured analog key, look up its byte index in the live frame. Grid caps
@@ -130,19 +135,19 @@ fn Stage(state: Option<AnalogState>) -> Element {
         .collect();
 
     // The selected key, resolved to its analog config when the daemon has one for
-    // it. Analog actuation isn't grid-only: the spacebar (`KEY_SPACE`) and thumb
-    // button (`KEY_LEFTALT`) are pressure inputs too, so we match ANY bindable cap
-    // by its evdev name against the analog config (the `pressures` map is already
-    // keyed the same way). `open_left` opens the 240px popover toward the stage
+    // it. Analog actuation isn't grid-only: the spacebar (`KEY_SPACE`) is analog
+    // byte 19 too (the thumb button/thumbpad/wheel are digital-only, with no
+    // pressure byte), so we match ANY bindable cap by its evdev name against the
+    // analog config (the `pressures` map is already keyed the same way) — digital
+    // caps simply never appear in that config. `open_left` opens the 240px popover toward the stage
     // centre for right-side caps (right grid columns + the thumb cluster) so it
     // never runs off-screen. Unconfigured caps, the wheel, and the whole offline
     // path resolve to `None` — no editor opens.
-    let selected_cfg: Option<(AnalogKeyConfig, bool)> =
-        store.read().selected.and_then(|sel| {
-            let name = sel.evdev()?;
-            let cfg = keys.iter().find(|c| c.key == name).cloned()?;
-            Some((cfg, opens_left(sel)))
-        });
+    let selected_cfg: Option<(AnalogKeyConfig, bool)> = store.read().selected.and_then(|sel| {
+        let name = sel.evdev()?;
+        let cfg = keys.iter().find(|c| c.key == name).cloned()?;
+        Some((cfg, opens_left(sel)))
+    });
 
     // Resolve the multi-selection to the analog configs we can bulk-edit (caps
     // with no analog config — e.g. an unmapped key — are silently skipped).
@@ -195,9 +200,10 @@ fn Stage(state: Option<AnalogState>) -> Element {
                     // A real multi-key drag → bulk editor, but only if the drag
                     // covers ≥1 analog-configured cap; otherwise clear the set so
                     // the highlight can't wedge with no editor to open.
-                    if set.iter().any(|k| {
-                        k.evdev().is_some_and(|n| configured.contains(&n))
-                    }) {
+                    if set
+                        .iter()
+                        .any(|k| k.evdev().is_some_and(|n| configured.contains(&n)))
+                    {
                         multi_open.set(true);
                         store.write().selected = None;
                     } else {
@@ -335,15 +341,10 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
         let act = actuation();
         let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
         for c in cfgs.read().iter() {
-            let sap = c.second_actuation_point.map(|p| p.max(act.saturating_add(1))); // deeper than actuation
-            crate::ipc::set_actuation(
-                store,
-                c.index,
-                act,
-                rel,
-                sap,
-                c.second_action.clone(),
-            );
+            let sap = c
+                .second_actuation_point
+                .map(|p| p.max(act.saturating_add(1))); // deeper than actuation
+            crate::ipc::set_actuation(store, c.index, act, rel, sap, c.second_action.clone());
         }
     };
 
@@ -517,7 +518,11 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
 
     // The keypad anchors this popover inside the selected cap; `.open-left` just
     // flips which side it opens on. No top/left math — the cap is its frame.
-    let modal_class = if open_left { "cal-modal open-left" } else { "cal-modal" };
+    let modal_class = if open_left {
+        "cal-modal open-left"
+    } else {
+        "cal-modal"
+    };
 
     rsx! {
         div {

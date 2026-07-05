@@ -16,8 +16,10 @@
 //! Gated: needs a writable `/dev/uinput`. If absent (e.g. CI), the test prints
 //! `SKIPPED` and returns green rather than failing.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use evdev::uinput::VirtualDevice;
@@ -106,7 +108,10 @@ fn open_with_retry(path: &std::path::Path) -> Device {
             Err(e) => panic!("opening {}: {e}", path.display()),
         }
     }
-    panic!("{} stayed permission-denied (udev never applied input group)", path.display());
+    panic!(
+        "{} stayed permission-denied (udev never applied input group)",
+        path.display()
+    );
 }
 
 /// Inject a key down+up on the source device.
@@ -151,14 +156,9 @@ fn test_config() -> Config {
             keys: vec!["KEY_B".into()],
         },
     );
+    p.base.insert("KEY_LEFTALT".into(), BindAction::Hypershift);
     p.base
-        .insert("KEY_LEFTALT".into(), BindAction::Hypershift);
-    p.base.insert(
-        "KEY_B".into(),
-        BindAction::Macro {
-            name: "hi".into(),
-        },
-    );
+        .insert("KEY_B".into(), BindAction::Macro { name: "hi".into() });
     p.hypershift.insert(
         "KEY_A".into(),
         BindAction::Key {
@@ -174,10 +174,18 @@ fn test_config() -> Config {
         Macro {
             name: "hi".into(),
             steps: vec![
-                MacroStep::Press { key: "KEY_H".into() },
-                MacroStep::Release { key: "KEY_H".into() },
-                MacroStep::Press { key: "KEY_I".into() },
-                MacroStep::Release { key: "KEY_I".into() },
+                MacroStep::Press {
+                    key: "KEY_H".into(),
+                },
+                MacroStep::Release {
+                    key: "KEY_H".into(),
+                },
+                MacroStep::Press {
+                    key: "KEY_I".into(),
+                },
+                MacroStep::Release {
+                    key: "KEY_I".into(),
+                },
             ],
         },
     );
@@ -238,6 +246,13 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
+    // Detach the output handle NOW, before anything below can panic: its Drop
+    // joins the output thread, which never exits while the engine thread holds
+    // an `out_tx` clone (the same reason main.rs can't cooperatively join) — so
+    // a failing assert would unwind into that join and WEDGE the test binary
+    // (burning the whole CI timeout, assertion message never flushed) instead
+    // of reporting red. Process teardown reclaims the uinput device either way.
+    std::mem::forget(out);
 
     // 3. GRAB the sink on the test's read fd BEFORE anything is injected, so the
     //    remapped events never reach the focused window and we read them cleanly.
@@ -264,7 +279,7 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
     // 5. Wire the REAL pipeline: reader -> engine -> output sink.
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn(); // no real device; lighting no-ops
-    let _reader = pipeline::spawn_reader(node, engine_tx);
+    let _reader = pipeline::spawn_reader(node, engine_tx, Arc::new(RwLock::new(HashSet::new())));
     let engine = Engine::new(test_config());
     let _engine = pipeline::spawn_engine(
         engine,
@@ -288,7 +303,9 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
     );
 
     // ---- Case 2: Hypershift: hold KEY_LEFTALT, KEY_A -> KEY_F1 ----
-    source.emit(&[*KeyEvent::new(KeyCode::KEY_LEFTALT, 1)]).unwrap();
+    source
+        .emit(&[*KeyEvent::new(KeyCode::KEY_LEFTALT, 1)])
+        .unwrap();
     std::thread::sleep(Duration::from_millis(30));
     tap(&mut source, KeyCode::KEY_A);
     let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
@@ -297,7 +314,9 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
         vec![(KeyCode::KEY_F1.0, 1), (KeyCode::KEY_F1.0, 0)],
         "with Hypershift held, KEY_A should remap to KEY_F1"
     );
-    source.emit(&[*KeyEvent::new(KeyCode::KEY_LEFTALT, 0)]).unwrap();
+    source
+        .emit(&[*KeyEvent::new(KeyCode::KEY_LEFTALT, 0)])
+        .unwrap();
     std::thread::sleep(Duration::from_millis(30));
 
     // ---- Case 3: macro: KEY_B -> taps KEY_H, KEY_I ----
@@ -316,13 +335,10 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
         "KEY_B should play the hi macro (H, I)"
     );
 
-    // Drop the test's grab on the sink so nothing is left grabbed.
+    // Drop the test's grab on the sink so nothing is left grabbed. The output/
+    // engine threads were already detached (`out` forgotten above); process
+    // teardown reclaims the uinput devices when the test binary exits.
     drop(sink_reader);
-    // Do NOT join the output/engine threads: the engine thread holds an
-    // `out_tx` clone (same reason `main.rs` can't cooperatively join), so a join
-    // would block forever. Detach the handles and let process teardown reclaim
-    // the uinput devices when the test binary exits.
-    std::mem::forget(out);
     std::mem::forget(source);
 }
 
@@ -354,6 +370,10 @@ fn unplug_mid_hold_releases_held_keys() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
+    // Detach the output handle before any assert can panic: its Drop joins the
+    // output thread, which the engine's `out_tx` clone keeps alive forever — an
+    // unwind would deadlock the test binary instead of reporting red.
+    std::mem::forget(out);
 
     let mut sink_reader = open_with_retry(&sink_path);
     sink_reader.grab().expect("grab sink");
@@ -367,7 +387,7 @@ fn unplug_mid_hold_releases_held_keys() {
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn();
-    let _reader = pipeline::spawn_reader(node, engine_tx);
+    let _reader = pipeline::spawn_reader(node, engine_tx, Arc::new(RwLock::new(HashSet::new())));
     let engine = Engine::new(test_config()); // KEY_A -> KEY_B
     let _engine = pipeline::spawn_engine(
         engine,
@@ -383,7 +403,11 @@ fn unplug_mid_hold_releases_held_keys() {
     // Hold KEY_A (-> KEY_B down on the sink); deliberately NO key-up.
     source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 1)]).unwrap();
     let down = read_keys(&mut sink_reader, 1, Duration::from_secs(2));
-    assert_eq!(down, vec![(KeyCode::KEY_B.0, 1)], "held KEY_A -> KEY_B down");
+    assert_eq!(
+        down,
+        vec![(KeyCode::KEY_B.0, 1)],
+        "held KEY_A -> KEY_B down"
+    );
 
     // Simulate UNPLUG: drop the source device. The grabbed reader's next
     // fetch_events() errors, the reader sends EngineMsg::ReleaseAll, and the
@@ -398,7 +422,6 @@ fn unplug_mid_hold_releases_held_keys() {
     );
 
     drop(sink_reader);
-    std::mem::forget(out);
 }
 
 /// Pipeline NKRO regression guard: prove the HOST side (reader -> engine ->
@@ -456,11 +479,17 @@ fn nkro_eight_simultaneous_keys_pass_through() {
             std::thread::sleep(Duration::from_millis(10));
         }
     };
+    // Detach the output handle before any assert can panic: its Drop joins the
+    // output thread, which the engine's `out_tx` clone keeps alive forever — an
+    // unwind would deadlock the test binary instead of reporting red.
+    std::mem::forget(out);
 
     // 3. GRAB the sink BEFORE any injection so the 8 keys never reach the desktop.
     let mut sink_reader = open_with_retry(&sink_path);
     sink_reader.grab().expect("grab sink");
-    sink_reader.set_nonblocking(true).expect("set sink non-blocking");
+    sink_reader
+        .set_nonblocking(true)
+        .expect("set sink non-blocking");
 
     // 4. Grab the SOURCE (unchecked: synthetic uinput device has no Tartarus ids).
     drop(open_with_retry(&source_path));
@@ -470,7 +499,7 @@ fn nkro_eight_simultaneous_keys_pass_through() {
     // 5. Wire the REAL pipeline with a passthrough config.
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarus_daemon::device::spawn();
-    let _reader = pipeline::spawn_reader(node, engine_tx);
+    let _reader = pipeline::spawn_reader(node, engine_tx, Arc::new(RwLock::new(HashSet::new())));
     let engine = Engine::new(passthrough_config());
     let _engine = pipeline::spawn_engine(
         engine,
@@ -518,6 +547,166 @@ fn nkro_eight_simultaneous_keys_pass_through() {
     }
 
     drop(sink_reader);
+    std::mem::forget(source);
+}
+
+/// Hybrid-analog reader filter: a key CLAIMED by the analog map is passed to the
+/// reader as its drop-set and must never reach the engine — neither the raw key
+/// nor its remapped bind may show up on the sink (in analog mode that key is
+/// synthesized from pressure; a digital dupe would e.g. fire a macro bind twice).
+/// An UNCLAIMED key on the same reader must still flow through and remap.
+///
+/// Here KEY_A is claimed (test_config remaps it to KEY_B, so a filter leak would
+/// surface as KEY_B on the sink) and KEY_B is unclaimed (bound to the `hi` macro,
+/// proving the full resolve path still runs behind the filter).
+///
+/// The set is LIVE (the analog source republishes it when a `SetActuation`
+/// changes what analog synthesizes), so the tail of the test mutates it in
+/// place and proves (a) an unclaimed key starts flowing again — the stale-set
+/// regression that killed a key until restart — and (b) the reader latches its
+/// drop decision on the DOWN edge, so a claim change mid-hold neither strands a
+/// forwarded key without its UP (stuck key) nor forwards an orphan UP.
+#[test]
+fn drop_set_filters_claimed_key_but_passes_unclaimed() {
+    if !uinput_available() {
+        eprintln!("SKIPPED drop_set_filters: /dev/uinput not writable here");
+        return;
+    }
+    eprintln!("RAN drop_set_filters: /dev/uinput available");
+
+    // 1. Fake SOURCE + its node.
+    let mut source = build_source();
+    let source_path = node_path(&mut source);
+
+    // 2. Real SINK (output thread) + its node.
+    let out = output::spawn().expect("output sink");
+    let out_tx = out.sender();
+    let sink_path = {
+        let mut tries = 0;
+        loop {
+            if let Some(p) = out.node_paths().first() {
+                break p.clone();
+            }
+            tries += 1;
+            assert!(tries < 100, "sink node never appeared");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    // Detach the output handle before any assert can panic: its Drop joins the
+    // output thread, which the engine's `out_tx` clone keeps alive forever — an
+    // unwind would deadlock the test binary instead of reporting red.
     std::mem::forget(out);
+
+    // 3. GRAB the sink BEFORE any injection so nothing reaches the desktop.
+    let mut sink_reader = open_with_retry(&sink_path);
+    sink_reader.grab().expect("grab sink");
+    sink_reader
+        .set_nonblocking(true)
+        .expect("set sink non-blocking");
+
+    // 4. Grab the SOURCE (unchecked: synthetic uinput device has no Tartarus ids).
+    drop(open_with_retry(&source_path));
+    let mut node = input::open_node(&source_path).expect("open source node");
+    input::grab_unchecked(&mut node).expect("grab source");
+
+    // 5. Wire the REAL pipeline, this time with KEY_A in the reader's drop-set —
+    //    exactly how main.rs arms analog-mode readers with the claimed-key set.
+    //    The test keeps a clone and later mutates it in place, playing the
+    //    analog source's role as the set's single writer.
+    let drop_keys: tartarus_daemon::analog_source::ClaimedKeys =
+        Arc::new(RwLock::new(HashSet::from([KeyCode::KEY_A.0])));
+    let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
+    let device = tartarus_daemon::device::spawn();
+    let _reader = pipeline::spawn_reader(node, engine_tx, drop_keys.clone());
+    let engine = Engine::new(test_config()); // KEY_A -> KEY_B; KEY_B -> macro(H, I)
+    let _engine = pipeline::spawn_engine(
+        engine,
+        engine_rx,
+        out_tx,
+        device,
+        std::env::temp_dir().join("tartarus-loopback-nonexistent.toml"),
+        DAEMON_VERSION,
+    );
+
+    std::thread::sleep(Duration::from_millis(150));
+
+    // ---- Claimed KEY_A: dropped at the reader, so NOTHING may reach the sink —
+    // not raw KEY_A and not its KEY_B remap. Bounded negative read: if the
+    // filter leaked, the KEY_B down would arrive well within the window.
+    tap(&mut source, KeyCode::KEY_A);
+    let got = read_keys(&mut sink_reader, 1, Duration::from_millis(700));
+    assert!(
+        got.is_empty(),
+        "claimed KEY_A must be dropped before the engine (no raw key, no remap); got {got:?}"
+    );
+
+    // ---- Unclaimed KEY_B: still flows through the same reader and remaps
+    // (plays the `hi` macro: H down/up, I down/up). This would also catch any
+    // stale KEY_A leftovers from the drop case — they'd pollute this read.
+    tap(&mut source, KeyCode::KEY_B);
+    let got = read_keys(&mut sink_reader, 4, Duration::from_secs(3));
+    assert_eq!(
+        got,
+        vec![
+            (KeyCode::KEY_H.0, 1),
+            (KeyCode::KEY_H.0, 0),
+            (KeyCode::KEY_I.0, 1),
+            (KeyCode::KEY_I.0, 0),
+        ],
+        "unclaimed KEY_B must still remap through the filtered reader"
+    );
+
+    // ---- LIVE un-claim: simulate a SetActuation that removed KEY_A from what
+    // analog synthesizes. The reader must pick the change up on the very next
+    // press — a stale set here is the "key dead until restart" regression.
+    drop_keys.write().unwrap().clear();
+    tap(&mut source, KeyCode::KEY_A);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_B.0, 1), (KeyCode::KEY_B.0, 0)],
+        "un-claimed KEY_A must start flowing (and remapping) again"
+    );
+
+    // ---- Down-edge latching, claim added MID-HOLD: the forwarded press must
+    // still get its UP through (else KEY_B sticks down on the sink forever).
+    source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 1)]).unwrap();
+    let got = read_keys(&mut sink_reader, 1, Duration::from_secs(2));
+    assert_eq!(got, vec![(KeyCode::KEY_B.0, 1)], "held KEY_A -> KEY_B down");
+    drop_keys.write().unwrap().insert(KeyCode::KEY_A.0);
+    source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 0)]).unwrap();
+    let got = read_keys(&mut sink_reader, 1, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_B.0, 0)],
+        "an UP must follow its press's forward decision even if the key was \
+         claimed mid-hold (no stuck key)"
+    );
+
+    // ---- Down-edge latching, claim removed MID-HOLD: a press that was dropped
+    // stays dropped through its UP (the engine never saw the down; forwarding
+    // an orphan up would be a phantom edge). Bounded negative read again.
+    source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 1)]).unwrap(); // dropped
+    // A dropped event has no observable output to sync on, so before mutating
+    // the set, prove the reader consumed the down: tap an unbound sentinel
+    // (KEY_H passes through verbatim) emitted AFTER it on the same node —
+    // events are processed in order, so its arrival means the down was decided.
+    tap(&mut source, KeyCode::KEY_H);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_H.0, 1), (KeyCode::KEY_H.0, 0)],
+        "sentinel tap must pass through (sync point for the dropped down)"
+    );
+    drop_keys.write().unwrap().clear();
+    source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 0)]).unwrap();
+    let got = read_keys(&mut sink_reader, 1, Duration::from_millis(700));
+    assert!(
+        got.is_empty(),
+        "the UP of a dropped press must also be dropped after a mid-hold \
+         un-claim; got {got:?}"
+    );
+
+    drop(sink_reader);
     std::mem::forget(source);
 }

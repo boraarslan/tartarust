@@ -87,5 +87,9 @@ key = "KEY_Z"
 key = "KEY_X"
 [analog.keys.18]
 key = "KEY_C"
+# Byte 19 is the SPACEBAR (hardware-confirmed). Bytes 20-22 are unused, and the
+# circular thumb button, 8-way thumbpad, and wheel are digital-only (plain HID
+# keyboard inputs on interface 0) — they have no pressure byte and are NOT
+# analog-mappable.
 [analog.keys.19]
-key = "BTN_MIDDLE"
+key = "KEY_SPACE"

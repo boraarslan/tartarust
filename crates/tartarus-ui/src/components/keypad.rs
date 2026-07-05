@@ -20,7 +20,7 @@ use dioxus::prelude::*;
 
 use tartarus_ipc::Layer;
 
-use crate::model::{cap_function, BindAction, KeyId, ThumbAxisMode, ThumbDir, WheelDir, GRID_ROWS};
+use crate::model::{BindAction, GRID_ROWS, KeyId, ThumbAxisMode, ThumbDir, WheelDir, cap_function};
 use crate::use_store;
 
 /// What the keypad is being used for on the current screen.
@@ -107,8 +107,16 @@ pub fn Keypad(
 
     let space_press = press_of(KeyId::Space);
     let thumb_btn_press = press_of(KeyId::ThumbButton);
-    let space_modal = if host(KeyId::Space) { children.clone() } else { rsx! {} };
-    let thumb_btn_modal = if host(KeyId::ThumbButton) { children.clone() } else { rsx! {} };
+    let space_modal = if host(KeyId::Space) {
+        children.clone()
+    } else {
+        rsx! {}
+    };
+    let thumb_btn_modal = if host(KeyId::ThumbButton) {
+        children.clone()
+    } else {
+        rsx! {}
+    };
 
     rsx! {
         div { class: "keypad",
@@ -207,7 +215,11 @@ fn Cap(
             if matches!(bind, Some(BindAction::Disable)) {
                 classes.push_str(" disabled");
             }
-            (key_id.cap(), cap_function(key_id, bind.as_ref()), String::new())
+            (
+                key_id.cap(),
+                cap_function(key_id, bind.as_ref()),
+                String::new(),
+            )
         }
         KeypadMode::Lighting => {
             classes.push_str(" lit");
@@ -333,13 +345,22 @@ fn set_axis_mode(store: &mut Signal<crate::model::AppState>, mode: ThumbAxisMode
 }
 
 #[component]
-fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer: Layer) -> Element {
+fn ThumbDirCap(
+    dir: ThumbDir,
+    left: String,
+    top: String,
+    mode: KeypadMode,
+    layer: Layer,
+) -> Element {
     let mut store = use_store();
     let key = KeyId::Thumb(dir);
     let s = store.read();
     let selected = is_selected(&s, key, mode, layer);
     let style = if mode == KeypadMode::Lighting {
-        format!("left:{left}%;top:{top}%;{}", lit_face_style(&lit_color(&s, key)))
+        format!(
+            "left:{left}%;top:{top}%;{}",
+            lit_face_style(&lit_color(&s, key))
+        )
     } else {
         format!("left:{left}%;top:{top}%;")
     };
@@ -351,7 +372,11 @@ fn ThumbDirCap(dir: ThumbDir, left: String, top: String, mode: KeypadMode, layer
         let bind = s.bind_for(key, layer);
         disabled = matches!(bind, Some(BindAction::Disable));
         let f = cap_function(key, bind.as_ref());
-        if f.is_empty() { dir.label().to_string() } else { f }
+        if f.is_empty() {
+            dir.label().to_string()
+        } else {
+            f
+        }
     } else {
         dir.label().to_string()
     };
@@ -480,7 +505,7 @@ fn Space(
     }
 }
 
-/// The analog thumb button (emits `KEY_LEFTALT`); pressure-capable like the grid.
+/// The thumb button (emits `KEY_LEFTALT`); digital-only — no analog pressure byte.
 #[component]
 fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element) -> Element {
     let mut store = use_store();
@@ -526,7 +551,9 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
 /// The lit-face inline style for Lighting mode: the cap face takes the key's
 /// colour, with a dark, subtly-lifted legend that stays legible on any hue.
 fn lit_face_style(c: &str) -> String {
-    format!("background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};")
+    format!(
+        "background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};"
+    )
 }
 
 /// Live pressure: fill the cap's cloned `.pressed::after` overlay from the
@@ -557,16 +584,22 @@ fn lit_color(s: &crate::model::AppState, key: KeyId) -> String {
     match &l.effect {
         Effect::None => "#0e0f10".into(),
         Effect::Static { color } | Effect::Reactive { color, .. } => solid(*color),
-        Effect::Breathing { colors } | Effect::Starlight { colors, .. } => {
-            solid(colors.first().copied().unwrap_or(Rgb::new(0x44, 0xD6, 0x2C)))
-        }
+        Effect::Breathing { colors } | Effect::Starlight { colors, .. } => solid(
+            colors
+                .first()
+                .copied()
+                .unwrap_or(Rgb::new(0x44, 0xD6, 0x2C)),
+        ),
         Effect::Custom { frame } => {
             // Frame is a flat 0..21 column row; map grid keys onto it.
             let idx = match key {
                 KeyId::Grid(g) => g as usize,
                 _ => return "#101418".into(),
             };
-            frame.get(idx).copied().map_or_else(|| "#101418".into(), solid)
+            frame
+                .get(idx)
+                .copied()
+                .map_or_else(|| "#101418".into(), solid)
         }
         Effect::Spectrum | Effect::Wave { .. } => {
             // Spread a hue across every input for a believable preview.

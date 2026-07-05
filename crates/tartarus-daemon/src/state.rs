@@ -36,10 +36,15 @@ pub struct Config {
     pub tray: bool,
     /// How the daemon reads the keypad. `Digital` (default) grabs the evdev
     /// nodes and remaps normal HID keystrokes (the proven M1 path). `Analog`
-    /// instead puts the device in DRIVER mode and derives key-down/up from raw
-    /// per-key pressure via [`AnalogConfig`] — the two are mutually exclusive
-    /// (DRIVER mode disables the normal HID keyboard), so analog REPLACES the
-    /// grab. Opt-in until the byte->key map is confirmed on hardware.
+    /// puts the device in DRIVER mode and derives the GRID's key-down/up from
+    /// raw per-key pressure via [`AnalogConfig`] — but it is a HYBRID, not a
+    /// replacement for the grab: DRIVER mode silences only the grid digitally,
+    /// while the thumb-area keys (thumb button, thumbpad arrows) stay a normal
+    /// HID keyboard on the boot interface. Analog mode therefore ALSO grabs
+    /// every keyboard node and reads the boot one for the thumb keys, dropping
+    /// the analog-claimed codes from that reader so nothing double-feeds (see
+    /// `crate::input::plan_grabs_analog` + `crate::analog_source`). Opt-in
+    /// until the byte->key map is confirmed on hardware.
     #[serde(default)]
     pub input_mode: InputMode,
     /// Analog actuation settings (only consulted when `input_mode = Analog`).
@@ -523,7 +528,10 @@ mod tests {
         let cfg = Config::from_toml(src).expect("minimal analog key must load");
         let k = &cfg.analog.keys["0"];
         assert_eq!(k.actuation_point, DEFAULT_ACTUATION_POINT);
-        assert_eq!(k.release_point, DEFAULT_ACTUATION_POINT - DEFAULT_HYSTERESIS);
+        assert_eq!(
+            k.release_point,
+            DEFAULT_ACTUATION_POINT - DEFAULT_HYSTERESIS
+        );
     }
 
     /// The full analog config round-trips through TOML unchanged (the daemon

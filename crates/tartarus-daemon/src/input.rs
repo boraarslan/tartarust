@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use evdev::{Device, KeyCode, RelativeAxisCode};
 
 use tartarus_protocol::{PRODUCT_ID, VENDOR_ID};
@@ -47,7 +47,6 @@ pub struct DeviceNode {
     /// from the NKRO keyboard ([`NKRO_INTERFACE`]).
     pub interface: Option<u8>,
 }
-
 
 /// The grab decision for a set of discovered nodes — which keyboard nodes the
 /// daemon should attempt to grab, and whether to warn that rollover may be capped.
@@ -91,9 +90,9 @@ pub fn plan_grabs(nodes: &[(NodeKind, Option<u8>)]) -> GrabPlan {
     // non-boot number. `None` does NOT qualify (unknown topology -> grab-all
     // fallback + warn), which is both safer and the fix for the all-`None`
     // case that previously suppressed the rollover warning.
-    let have_real_nkro = nodes
-        .iter()
-        .any(|&(kind, iface)| kind == NodeKind::Keyboard && iface.is_some_and(|i| i != BOOT_INTERFACE));
+    let have_real_nkro = nodes.iter().any(|&(kind, iface)| {
+        kind == NodeKind::Keyboard && iface.is_some_and(|i| i != BOOT_INTERFACE)
+    });
 
     let mut grab = Vec::with_capacity(nodes.len());
     let mut any_keyboard_grabbed = false;
@@ -116,6 +115,62 @@ pub fn plan_grabs(nodes: &[(NodeKind, Option<u8>)]) -> GrabPlan {
         // capped — instead of silently suppressing it.
         warn_rollover: any_keyboard_grabbed && !have_real_nkro,
     }
+}
+
+/// The ANALOG-mode (DRIVER) grab decision — which nodes to grab and which of
+/// the grabbed nodes to actually READ, both index-aligned with the input slice
+/// like [`GrabPlan`].
+///
+/// Grab and read are split because grab-without-read is legitimate here: a
+/// grabbed-but-unread node is a pure dupe suppressor — its events reach neither
+/// the OS (grabbed) nor the engine (unread).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalogGrabPlan {
+    /// Per-node "attempt to grab" mask, index-aligned with the input.
+    pub grab: Vec<bool>,
+    /// Per-node "spawn a reader" mask, index-aligned with the input. `true`
+    /// implies `grab` at the same index.
+    pub read: Vec<bool>,
+}
+
+/// Decide the grab/read surface for ANALOG (DRIVER) mode, given each node's
+/// `(kind, interface)`. Pure + unit-tested with hand-built tuples, like
+/// [`plan_grabs`].
+///
+/// In DRIVER mode the grid is digitally SILENT (pressure only, synthesized by
+/// the analog source), but the thumb-area keys (thumb button = `KEY_LEFTALT`,
+/// thumbpad arrows) keep emitting classic HID boot reports on the boot keyboard
+/// interface ([`BOOT_INTERFACE`]). Rules:
+///
+/// - Grab EVERY keyboard node: the boot node because we read it, any other
+///   keyboard node (NKRO) as a free dupe suppressor — if it also mirrors the
+///   thumb events, ungrabbed it would leak them raw to the OS. `Pointer`/`Other`
+///   are never grabbed or read — same pass-through rationale as digital mode.
+/// - Read ONLY keyboard nodes whose interface RESOLVED to the boot number
+///   (`Some(BOOT_INTERFACE)`) — the interface carrying the thumb events.
+/// - Degraded fallback: if NO boot-confirmed keyboard node exists (unknown or
+///   unreadable sysfs topology), read every grabbed keyboard node. Unknown
+///   topology must not leave the thumb keys dead; the possible cross-node dupe
+///   this admits is the lesser evil, and the reader's claimed-key drop filter
+///   still protects the analog-owned keys either way.
+/// - No rollover warning: the boot node's 6-slot cap is irrelevant in analog
+///   mode — at most ~3 digital keys are ever in flight (two thumbpad arrows on
+///   a diagonal + the thumb button, which rides a modifier bit, not a slot).
+pub fn plan_grabs_analog(nodes: &[(NodeKind, Option<u8>)]) -> AnalogGrabPlan {
+    let have_boot = nodes
+        .iter()
+        .any(|&(kind, iface)| kind == NodeKind::Keyboard && iface == Some(BOOT_INTERFACE));
+
+    let mut grab = Vec::with_capacity(nodes.len());
+    let mut read = Vec::with_capacity(nodes.len());
+    for &(kind, iface) in nodes {
+        let is_keyboard = kind == NodeKind::Keyboard;
+        grab.push(is_keyboard);
+        // Read the boot node; with no confirmed boot node, read everything we
+        // grab (degraded fallback — see the doc comment above).
+        read.push(is_keyboard && (!have_boot || iface == Some(BOOT_INTERFACE)));
+    }
+    AnalogGrabPlan { grab, read }
 }
 
 /// A rough classification of a Tartarus event node.
@@ -177,8 +232,7 @@ pub fn discover_required() -> anyhow::Result<Vec<DeviceNode>> {
 /// [`discover`] instead.
 pub fn open_node(path: impl AsRef<std::path::Path>) -> anyhow::Result<DeviceNode> {
     let path = path.as_ref().to_path_buf();
-    let device =
-        Device::open(&path).with_context(|| format!("opening {}", path.display()))?;
+    let device = Device::open(&path).with_context(|| format!("opening {}", path.display()))?;
     let kind = classify(&device);
     let interface = interface_number(&path);
     Ok(DeviceNode {
@@ -301,10 +355,7 @@ mod tests {
     fn boot_and_nkro_present_grabs_nkro_only() {
         // The real device topology: iface0 boot (6KRO) + iface1 NKRO. Grab the
         // NKRO node, skip the boot node, no warning.
-        let plan = plan_grabs(&[
-            (KBD, Some(BOOT_INTERFACE)),
-            (KBD, Some(NKRO_INTERFACE)),
-        ]);
+        let plan = plan_grabs(&[(KBD, Some(BOOT_INTERFACE)), (KBD, Some(NKRO_INTERFACE))]);
         assert_eq!(plan.grab, vec![false, true]);
         assert!(!plan.warn_rollover);
     }
@@ -362,5 +413,71 @@ mod tests {
         let plan = plan_grabs(&[(KBD, Some(NKRO_INTERFACE))]);
         assert_eq!(plan.grab, vec![true]);
         assert!(!plan.warn_rollover);
+    }
+
+    // ---- plan_grabs_analog: the hybrid (DRIVER-mode) grab/read decision ----
+
+    #[test]
+    fn analog_boot_and_nkro_grabs_both_reads_boot_only() {
+        // The real device topology: grab BOTH keyboards (the NKRO node is a
+        // dupe suppressor), but read only the boot node — it carries the
+        // thumb-area digital events in DRIVER mode.
+        let plan = plan_grabs_analog(&[(KBD, Some(BOOT_INTERFACE)), (KBD, Some(NKRO_INTERFACE))]);
+        assert_eq!(plan.grab, vec![true, true]);
+        assert_eq!(plan.read, vec![true, false]);
+    }
+
+    #[test]
+    fn analog_boot_only_grabs_and_reads_it() {
+        // Only the boot keyboard enumerable: grab + read it. (No rollover
+        // concern in analog mode — at most ~3 digital keys in flight.)
+        let plan = plan_grabs_analog(&[(KBD, Some(BOOT_INTERFACE))]);
+        assert_eq!(plan.grab, vec![true]);
+        assert_eq!(plan.read, vec![true]);
+    }
+
+    #[test]
+    fn analog_all_interfaces_unknown_grabs_and_reads_all_keyboards() {
+        // Degraded fallback: sysfs resolution failed for every keyboard node,
+        // so no node is boot-CONFIRMED. Read everything grabbed — unknown
+        // topology must not leave the thumb keys dead. A cross-node dupe is
+        // possible here (lesser evil); the reader's claimed-key drop filter
+        // still protects the analog-owned keys.
+        let plan = plan_grabs_analog(&[(KBD, None), (KBD, None)]);
+        assert_eq!(plan.grab, vec![true, true]);
+        assert_eq!(plan.read, vec![true, true]);
+    }
+
+    #[test]
+    fn analog_nkro_only_falls_back_to_reading_it() {
+        // A keyboard node exists but none is boot-confirmed (boot node not
+        // enumerable): the degraded fallback reads the one we grabbed rather
+        // than leaving the thumb keys dead.
+        let plan = plan_grabs_analog(&[(KBD, Some(NKRO_INTERFACE))]);
+        assert_eq!(plan.grab, vec![true]);
+        assert_eq!(plan.read, vec![true]);
+    }
+
+    #[test]
+    fn analog_no_keyboard_nodes_grabs_and_reads_nothing() {
+        // Pointer + Other only: nothing to grab, nothing to read.
+        let plan = plan_grabs_analog(&[(NodeKind::Pointer, Some(2)), (NodeKind::Other, None)]);
+        assert_eq!(plan.grab, vec![false, false]);
+        assert_eq!(plan.read, vec![false, false]);
+    }
+
+    #[test]
+    fn analog_pointer_and_other_never_grabbed_or_read() {
+        // Full node set: boot kbd, NKRO kbd, pointer, other. Keyboards are both
+        // grabbed, only boot is read; pointer/other pass through untouched
+        // (grabbing the pointer would suppress the thumbpad's mouse modes).
+        let plan = plan_grabs_analog(&[
+            (KBD, Some(BOOT_INTERFACE)),
+            (KBD, Some(NKRO_INTERFACE)),
+            (NodeKind::Pointer, Some(2)),
+            (NodeKind::Other, Some(3)),
+        ]);
+        assert_eq!(plan.grab, vec![true, true, false, false]);
+        assert_eq!(plan.read, vec![true, false, false, false]);
     }
 }
