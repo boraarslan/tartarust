@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use dioxus::prelude::*;
 
-use tartarus_ipc::{AnalogKeyConfig, AnalogState};
+use tartarus_ipc::{AnalogKeyConfig, AnalogState, DEFAULT_ACTUATION_POINT, DEFAULT_RELEASE_POINT};
 
 use crate::components::{
     CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, PageHead, Slider, Toggle,
@@ -51,15 +51,14 @@ pub fn Calibration() -> Element {
     // (the cage-harness path) — we render an honest offline state, never fake bars.
     let mut analog = use_signal::<Option<AnalogState>>(|| None);
 
+    let mut store = use_store();
+
     // Entering Calibration starts with NOTHING selected — don't inherit a key
     // selection (and auto-open its actuation modal) carried over from Customize
     // or a prior visit. Runs once on mount (no tracked signal reads).
-    {
-        let mut store = use_store();
-        use_effect(move || {
-            store.write().selected = None;
-        });
-    }
+    use_effect(move || {
+        store.write().selected = None;
+    });
 
     // Poll `GetAnalogState` on an interval, but ONLY while this component is
     // mounted: `use_future`'s task is cancelled on unmount, so navigating away
@@ -92,6 +91,38 @@ pub fn Calibration() -> Element {
             Some(a) if !a.analog_active => rsx! { DigitalModeState {} },
             Some(a) if a.keys.is_empty() => rsx! { NoKeysState {} },
             Some(_) => rsx! {},
+        }
+
+        // Page-level reset: return EVERY analog key to the default thresholds
+        // (dropping any dual-step). Only offered while something is actually
+        // custom; like any other edit it applies live and persists on Save.
+        if analog().is_some_and(|a| a.keys.iter().any(|k| k.is_custom())) {
+            div { class: "cal-toolbar",
+                button {
+                    class: "btn",
+                    onclick: move |_| {
+                        let keys: Vec<AnalogKeyConfig> = analog
+                            .peek()
+                            .as_ref()
+                            .map(|a| a.keys.clone())
+                            .unwrap_or_default();
+                        // Close an open editor: its sliders hold local edit
+                        // state that would go stale under the bulk reset.
+                        store.write().selected = None;
+                        for k in keys.iter().filter(|k| k.is_custom()) {
+                            crate::ipc::set_actuation(
+                                store,
+                                k.index,
+                                DEFAULT_ACTUATION_POINT,
+                                DEFAULT_RELEASE_POINT,
+                                None,
+                                None,
+                            );
+                        }
+                    },
+                    "Reset all to defaults"
+                }
+            }
         }
 
         Stage { state: analog() }
@@ -166,6 +197,14 @@ fn Stage(state: Option<AnalogState>) -> Element {
     // nothing to show.
     let configured: BTreeSet<String> = keys.iter().map(|c| c.key.clone()).collect();
     let configured_shift = configured.clone();
+
+    // Caps whose actuation deviates from the defaults — the keypad marks them
+    // with a dot so customized keys read at a glance.
+    let customized: BTreeSet<String> = keys
+        .iter()
+        .filter(|c| c.is_custom())
+        .map(|c| c.key.clone())
+        .collect();
 
     // Cap pointer handler: a plain click single-selects (the cap-anchored editor);
     // a drag across >1 cap, or Shift+clicks, build the multi set; the bulk editor
@@ -287,6 +326,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 pressures: Some(pressures),
                 on_cap_pointer: Some(pointer),
                 multi_selected: multi(),
+                customized,
                 if let Some((cfg, open_left)) = selected_cfg {
                     CalModal {
                         // CalModal re-seeds its sliders internally when the byte
@@ -328,8 +368,12 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
     let store = use_store();
     let count = cfgs.len();
     // Seed the sliders from the first selected key; editing then writes all.
-    let seed_act = cfgs.first().map_or(0x60, |c| c.actuation_point);
-    let seed_rel = cfgs.first().map_or(0x50, |c| c.release_point);
+    let seed_act = cfgs
+        .first()
+        .map_or(DEFAULT_ACTUATION_POINT, |c| c.actuation_point);
+    let seed_rel = cfgs
+        .first()
+        .map_or(DEFAULT_RELEASE_POINT, |c| c.release_point);
     let cfgs = use_signal(|| cfgs);
     let mut actuation = use_signal(|| seed_act);
     let mut release = use_signal(|| seed_rel);
@@ -532,6 +576,12 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
             // The × and the cap toggle still close it; interacting with the editor
             // never does.
             onclick: move |e| e.stop_propagation(),
+            // Mouse press/release must not bubble either: the host cap listens to
+            // mousedown/mouseup for the drag/multi-select pointer protocol, and an
+            // unstopped down+up pair on any control here (the dual-step toggle was
+            // the visible victim) reads as a cap click — closing the editor.
+            onmousedown: move |e| e.stop_propagation(),
+            onmouseup: move |e| e.stop_propagation(),
             div { class: "cal-modal-head",
                 span { "{cap} · #{byte_index}" }
                 span {
@@ -637,6 +687,23 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
                     div { class: "field-value", style: "color:var(--text-mute);margin-top:6px;",
                         "Fires when pressed past the second point. Must be deeper than actuation."
                     }
+                }
+            }
+
+            div { class: "divider" }
+
+            // Reset this key to the default thresholds and drop any dual-step
+            // (mirrors the Customize editor's reset affordance).
+            div { class: "btn-row",
+                button {
+                    class: "btn",
+                    onclick: move |_| {
+                        actuation.set(DEFAULT_ACTUATION_POINT);
+                        release.set(DEFAULT_RELEASE_POINT);
+                        second_enabled.set(false);
+                        push();
+                    },
+                    "Reset to default"
                 }
             }
         }

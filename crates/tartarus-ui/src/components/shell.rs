@@ -2,8 +2,8 @@
 
 use dioxus::prelude::*;
 
-use crate::use_store;
 use crate::Route;
+use crate::use_store;
 
 /// One sidebar entry: its route, label, and a small inline-SVG glyph.
 struct NavEntry {

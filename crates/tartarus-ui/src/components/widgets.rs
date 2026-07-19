@@ -26,7 +26,8 @@ pub fn Slider(
     /// Pre-formatted readout (e.g. "1.5 mm" or "75%").
     readout: String,
     /// Amber variant (used for the secondary actuation point).
-    #[props(default = false)] amber: bool,
+    #[props(default = false)]
+    amber: bool,
     on_input: EventHandler<f64>,
 ) -> Element {
     let cls = if amber { "slider amber" } else { "slider" };

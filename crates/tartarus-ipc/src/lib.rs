@@ -30,8 +30,8 @@ pub const PROTOCOL_VERSION: u32 = 0;
 
 /// Default control-socket path, under `$XDG_RUNTIME_DIR` (falls back to `/tmp`).
 pub fn default_socket_path() -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    let runtime =
+        std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     runtime.join("rusty-tartarus.sock")
 }
 
@@ -74,6 +74,15 @@ pub enum Request {
     CreateProfile {
         /// Name for the new profile (must be unique).
         name: String,
+    },
+    /// Duplicate an existing profile: a deep copy (binds, lighting, thumb-axis
+    /// mode) under a new name. The app link is NOT copied — two profiles linked
+    /// to the same app would make auto-switch ambiguous.
+    DuplicateProfile {
+        /// Profile to copy.
+        from: String,
+        /// Name for the copy (must be unique).
+        to: String,
     },
     /// Rename an existing profile.
     RenameProfile {
@@ -297,6 +306,25 @@ pub struct AnalogKeyConfig {
     pub second_action: Option<String>,
 }
 
+/// Default actuation point: the pressure at/above which an analog key registers
+/// DOWN. Lives in the contract crate so the daemon's config defaults and the
+/// UI's "reset to default" / custom-value indicator can never disagree.
+pub const DEFAULT_ACTUATION_POINT: u8 = 0x60;
+/// Default release point: the default actuation point minus the default
+/// hysteresis margin (0x10).
+pub const DEFAULT_RELEASE_POINT: u8 = 0x50;
+
+impl AnalogKeyConfig {
+    /// Whether this key deviates from the default actuation settings — custom
+    /// thresholds or a configured dual-step.
+    pub fn is_custom(&self) -> bool {
+        self.actuation_point != DEFAULT_ACTUATION_POINT
+            || self.release_point != DEFAULT_RELEASE_POINT
+            || self.second_actuation_point.is_some()
+            || self.second_action.is_some()
+    }
+}
+
 /// Snapshot of daemon + device state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaemonStatus {
@@ -378,6 +406,7 @@ mod tests {
                 | Request::ListProfiles
                 | Request::GetProfile { .. }
                 | Request::CreateProfile { .. }
+                | Request::DuplicateProfile { .. }
                 | Request::RenameProfile { .. }
                 | Request::DeleteProfile { .. }
                 | Request::SwitchProfile { .. }
@@ -405,6 +434,10 @@ mod tests {
             Request::ListProfiles,
             Request::GetProfile { name: "fps".into() },
             Request::CreateProfile { name: "fps".into() },
+            Request::DuplicateProfile {
+                from: "fps".into(),
+                to: "fps (copy)".into(),
+            },
             Request::RenameProfile {
                 from: "a".into(),
                 to: "b".into(),
@@ -442,7 +475,9 @@ mod tests {
             Request::SaveMacro {
                 r#macro: Macro {
                     name: "m".into(),
-                    steps: vec![MacroStep::Press { key: "KEY_A".into() }],
+                    steps: vec![MacroStep::Press {
+                        key: "KEY_A".into(),
+                    }],
                 },
             },
             Request::DeleteMacro { name: "m".into() },
@@ -506,7 +541,9 @@ mod tests {
             },
             Response::Macro(Macro {
                 name: "m1".into(),
-                steps: vec![MacroStep::Press { key: "KEY_A".into() }],
+                steps: vec![MacroStep::Press {
+                    key: "KEY_A".into(),
+                }],
             }),
             Response::AnalogState(AnalogState {
                 analog_active: true,
@@ -535,14 +572,20 @@ mod tests {
         for req in sample_requests() {
             let s = serde_json::to_string(&req)
                 .unwrap_or_else(|e| panic!("Request {req:?} failed to serialize: {e}"));
-            assert!(!s.contains('\n'), "Request {req:?} serialized with a newline");
+            assert!(
+                !s.contains('\n'),
+                "Request {req:?} serialized with a newline"
+            );
             let back: Request = serde_json::from_str(&s).unwrap();
             assert_eq!(req, back, "Request roundtrip mismatch: {s}");
         }
         for resp in sample_responses() {
             let s = serde_json::to_string(&resp)
                 .unwrap_or_else(|e| panic!("Response {resp:?} failed to serialize: {e}"));
-            assert!(!s.contains('\n'), "Response {resp:?} serialized with a newline");
+            assert!(
+                !s.contains('\n'),
+                "Response {resp:?} serialized with a newline"
+            );
             let back: Response = serde_json::from_str(&s).unwrap();
             assert_eq!(resp, back, "Response roundtrip mismatch: {s}");
         }

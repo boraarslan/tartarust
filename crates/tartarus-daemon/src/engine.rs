@@ -30,7 +30,7 @@ use evdev::{InputEvent, KeyCode, KeyEvent};
 
 use tartarus_ipc::model::{BindAction, Layer, LightingState, Macro, Profile, ThumbAxisMode};
 use tartarus_ipc::{
-    DaemonStatus, DeviceInfo, ProfileList, ProfileSummary, Request, Response, PROTOCOL_VERSION,
+    DaemonStatus, DeviceInfo, PROTOCOL_VERSION, ProfileList, ProfileSummary, Request, Response,
 };
 
 use crate::device::DeviceCmd;
@@ -94,12 +94,15 @@ pub struct Engine {
     /// Analog actuation settings. Pass-through state (same rationale as
     /// `input_mode`): never mutated by the engine, preserved across snapshots.
     analog: AnalogConfig,
-    /// Whether the in-memory config has edits not yet written to disk. Mutating
-    /// IPC requests apply LIVE (device commands fire, the analog actuator updates)
-    /// but the daemon does NOT persist them — it sets this flag instead. Only an
-    /// explicit [`Request::SaveProfile`] flushes the config and clears this. So
-    /// the user can try changes for the session and decide whether to keep them.
-    dirty: bool,
+    /// The config as of the last successful disk write (startup load, then
+    /// refreshed by [`Engine::mark_saved`] after each persist). Mutating IPC
+    /// requests apply LIVE (device commands fire, the analog actuator updates)
+    /// but the daemon does NOT persist them; only an explicit
+    /// [`Request::SaveProfile`] flushes the config. The unsaved-changes state is
+    /// DERIVED by diffing the live config against this snapshot — not a sticky
+    /// flag — so an edit that manually reverts state back to the saved value
+    /// reads as clean again (no phantom Save affordance).
+    saved: Config,
 
     // ---- live state (orthogonal to config; never touched by edits) ----
     /// Physical keys currently holding the Hypershift layer. The layer is active
@@ -127,6 +130,7 @@ pub struct Engine {
 impl Engine {
     /// Build an engine from a loaded [`Config`], starting on its default profile.
     pub fn new(config: Config) -> Self {
+        let saved = config.clone();
         Engine {
             active_profile: config.default_profile.clone(),
             configured_default: config.default_profile,
@@ -134,7 +138,7 @@ impl Engine {
             tray: config.tray,
             input_mode: config.input_mode,
             analog: config.analog,
-            dirty: false,
+            saved,
             profiles: config.profiles,
             macros: config.macros,
             hypershift_held_by: std::collections::HashSet::new(),
@@ -208,20 +212,23 @@ impl Engine {
         }
     }
 
-    /// Mark the in-memory config as having unsaved session edits.
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
+    /// Record the current config as the on-disk state (the daemon loop calls
+    /// this after a successful persist).
+    pub fn mark_saved(&mut self) {
+        self.saved = self.config_snapshot();
     }
 
-    /// Clear the unsaved-edits flag (the daemon loop calls this after a
-    /// successful persist).
-    pub fn clear_dirty(&mut self) {
-        self.dirty = false;
-    }
-
-    /// Whether the in-memory config has session edits not yet written to disk.
+    /// Whether the in-memory config differs from the last-saved one. A live
+    /// field-by-field diff (no snapshot clone), matching [`Engine::config_snapshot`]
+    /// field for field.
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.configured_default != self.saved.default_profile
+            || self.auto_switch != self.saved.auto_switch
+            || self.tray != self.saved.tray
+            || self.input_mode != self.saved.input_mode
+            || self.analog != self.saved.analog
+            || self.profiles != self.saved.profiles
+            || self.macros != self.saved.macros
     }
 
     /// The active profile's lighting as a [`DeviceCmd`] to apply it.
@@ -500,7 +507,7 @@ impl Engine {
                     active_profile: self.active_profile.clone(),
                     default_profile: self.configured_default.clone(),
                     auto_switch: self.auto_switch,
-                    unsaved_changes: self.dirty,
+                    unsaved_changes: self.is_dirty(),
                 }),
                 vec![],
             ),
@@ -533,6 +540,7 @@ impl Engine {
                 None => (err(format!("no such profile: {name}")), vec![]),
             },
             Request::CreateProfile { name } => self.create_profile(name),
+            Request::DuplicateProfile { from, to } => self.duplicate_profile(from, to),
             Request::RenameProfile { from, to } => self.rename_profile(from, to),
             Request::DeleteProfile { name } => self.delete_profile(name),
             Request::SwitchProfile { name } => self.switch_profile(name),
@@ -695,9 +703,7 @@ impl Engine {
             second_action,
         };
         // Persist into the config map (string-keyed by byte index).
-        self.analog
-            .keys
-            .insert(index.to_string(), new_key.clone());
+        self.analog.keys.insert(index.to_string(), new_key.clone());
         // Push to the live actuator if a source is running. The source forwards
         // any orphaned-held-key releases itself; nothing for the engine to emit.
         if let Some(tx) = &self.analog_update_tx {
@@ -714,6 +720,23 @@ impl Engine {
             return (err(format!("profile already exists: {name}")), vec![]);
         }
         self.profiles.insert(name.clone(), Profile::new(name));
+        (Response::Ack, vec![])
+    }
+
+    /// Deep-copy an existing profile (binds, lighting, thumb-axis mode) under a
+    /// new name. The app link is deliberately NOT copied: two profiles linked to
+    /// the same app would make auto-switch ambiguous.
+    fn duplicate_profile(&mut self, from: String, to: String) -> (Response, Vec<DeviceCmd>) {
+        let Some(src) = self.profiles.get(&from) else {
+            return (err(format!("no such profile: {from}")), vec![]);
+        };
+        if self.profiles.contains_key(&to) {
+            return (err(format!("profile already exists: {to}")), vec![]);
+        }
+        let mut copy = src.clone();
+        copy.name = to.clone();
+        copy.linked_app = None;
+        self.profiles.insert(to, copy);
         (Response::Ack, vec![])
     }
 
@@ -945,8 +968,14 @@ mod tests {
     #[test]
     fn passthrough_for_unbound_key() {
         let mut e = Engine::new(cfg(vec![], vec![]));
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_A.0, 1)]);
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 0)), vec![(KeyCode::KEY_A.0, 0)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_A.0, 1)]
+        );
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 0)),
+            vec![(KeyCode::KEY_A.0, 0)]
+        );
     }
 
     #[test]
@@ -994,7 +1023,10 @@ mod tests {
         ));
         assert!(keys(&e.handle_key(KeyCode::KEY_LEFTALT, 1)).is_empty());
         assert!(e.hypershift_active());
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_F1.0, 1)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_F1.0, 1)]
+        );
         // Releasing the trigger deactivates the layer.
         e.handle_key(KeyCode::KEY_LEFTALT, 0);
         assert!(!e.hypershift_active());
@@ -1010,10 +1042,16 @@ mod tests {
             vec![("KEY_A", key_action(&["KEY_F1"]))],
         ));
         e.handle_key(KeyCode::KEY_LEFTALT, 1);
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_F1.0, 1)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_F1.0, 1)]
+        );
         e.handle_key(KeyCode::KEY_LEFTALT, 0);
         // Release must undo KEY_F1, not KEY_1.
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 0)), vec![(KeyCode::KEY_F1.0, 0)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 0)),
+            vec![(KeyCode::KEY_F1.0, 0)]
+        );
     }
 
     #[test]
@@ -1026,8 +1064,10 @@ mod tests {
         let mut p1 = Profile::new("p1");
         p1.base.insert("KEY_LEFTALT".into(), BindAction::Hypershift);
         // In the hypershift layer, KEY_S switches to p2.
-        p1.hypershift
-            .insert("KEY_S".into(), BindAction::SwitchProfile { name: "p2".into() });
+        p1.hypershift.insert(
+            "KEY_S".into(),
+            BindAction::SwitchProfile { name: "p2".into() },
+        );
         // p2 does NOT bind KEY_LEFTALT to Hypershift at all.
         let p2 = Profile::new("p2");
         let mut profiles = BTreeMap::new();
@@ -1154,19 +1194,27 @@ mod tests {
         };
         let mut e = Engine::new(config);
 
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_1.0, 1)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_1.0, 1)]
+        );
         let (resp, _) = e.apply(Request::SwitchProfile { name: "p2".into() }, "test");
         assert_eq!(resp, Response::Ack);
         assert_eq!(e.active_profile(), "p2");
         // Release replays the record: KEY_1, not KEY_2.
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 0)), vec![(KeyCode::KEY_1.0, 0)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 0)),
+            vec![(KeyCode::KEY_1.0, 0)]
+        );
     }
 
     #[test]
     fn bound_switch_profile_emits_lighting_cmd() {
         let mut p1 = Profile::new("p1");
-        p1.base
-            .insert("KEY_A".into(), BindAction::SwitchProfile { name: "p2".into() });
+        p1.base.insert(
+            "KEY_A".into(),
+            BindAction::SwitchProfile { name: "p2".into() },
+        );
         let mut p2 = Profile::new("p2");
         p2.lighting = LightingState {
             effect: Effect::Static {
@@ -1232,7 +1280,10 @@ mod tests {
             ],
         );
         let down = e.handle_key(KeyCode::KEY_HOME, 1);
-        assert_eq!(keys(&down), vec![(KeyCode::KEY_W.0, 1), (KeyCode::KEY_A.0, 1)]);
+        assert_eq!(
+            keys(&down),
+            vec![(KeyCode::KEY_W.0, 1), (KeyCode::KEY_A.0, 1)]
+        );
     }
 
     #[test]
@@ -1247,7 +1298,10 @@ mod tests {
         e.handle_key(KeyCode::KEY_HOME, 1);
         let up = e.handle_key(KeyCode::KEY_HOME, 0);
         // Released in reverse press order: A (from KEY_LEFT) then W (from KEY_UP).
-        assert_eq!(keys(&up), vec![(KeyCode::KEY_A.0, 0), (KeyCode::KEY_W.0, 0)]);
+        assert_eq!(
+            keys(&up),
+            vec![(KeyCode::KEY_A.0, 0), (KeyCode::KEY_W.0, 0)]
+        );
     }
 
     #[test]
@@ -1259,10 +1313,16 @@ mod tests {
         let mut e = thumb_engine(ThumbAxisMode::Four, vec![]);
         // Diagonal down: emits KEY_UP (passthrough) + KEY_LEFT (passthrough).
         let d = e.handle_key(KeyCode::KEY_HOME, 1);
-        assert_eq!(keys(&d), vec![(KeyCode::KEY_UP.0, 1), (KeyCode::KEY_LEFT.0, 1)]);
+        assert_eq!(
+            keys(&d),
+            vec![(KeyCode::KEY_UP.0, 1), (KeyCode::KEY_LEFT.0, 1)]
+        );
         // Real cardinal KEY_UP down: already held by the diagonal -> no new event.
         let up_press = e.handle_key(KeyCode::KEY_UP, 1);
-        assert!(keys(&up_press).is_empty(), "KEY_UP already held by diagonal");
+        assert!(
+            keys(&up_press).is_empty(),
+            "KEY_UP already held by diagonal"
+        );
         // Release the diagonal: KEY_LEFT goes up, but KEY_UP stays (real cardinal).
         let diag_up = e.handle_key(KeyCode::KEY_HOME, 0);
         assert_eq!(keys(&diag_up), vec![(KeyCode::KEY_LEFT.0, 0)]);
@@ -1315,7 +1375,10 @@ mod tests {
         );
         // Now four-way: the diagonal expands to its two cardinals (passthrough).
         let d2 = e.handle_key(KeyCode::KEY_HOME, 1);
-        assert_eq!(keys(&d2), vec![(KeyCode::KEY_UP.0, 1), (KeyCode::KEY_LEFT.0, 1)]);
+        assert_eq!(
+            keys(&d2),
+            vec![(KeyCode::KEY_UP.0, 1), (KeyCode::KEY_LEFT.0, 1)]
+        );
     }
 
     #[test]
@@ -1362,12 +1425,22 @@ mod tests {
         // Switching the configured default does not move the live active profile.
         let (resp, _) = e.apply(Request::SetDefaultProfile { name: "fps".into() }, "t");
         assert_eq!(resp, Response::Ack);
-        assert_eq!(e.active_profile(), "default", "default change must not switch live");
+        assert_eq!(
+            e.active_profile(),
+            "default",
+            "default change must not switch live"
+        );
         // Persisted as the on-disk startup default.
         assert_eq!(e.config_snapshot().default_profile, "fps");
         // Unknown profile -> error.
         assert!(matches!(
-            e.apply(Request::SetDefaultProfile { name: "ghost".into() }, "t").0,
+            e.apply(
+                Request::SetDefaultProfile {
+                    name: "ghost".into()
+                },
+                "t"
+            )
+            .0,
             Response::Error { .. }
         ));
     }
@@ -1391,20 +1464,47 @@ mod tests {
     #[test]
     fn create_rename_delete_profile() {
         let mut e = two_profile_engine();
-        assert_eq!(e.apply(Request::CreateProfile { name: "fps".into() }, "t").0, Response::Ack);
+        assert_eq!(
+            e.apply(Request::CreateProfile { name: "fps".into() }, "t")
+                .0,
+            Response::Ack
+        );
         // duplicate rejected
         assert!(matches!(
-            e.apply(Request::CreateProfile { name: "fps".into() }, "t").0,
+            e.apply(Request::CreateProfile { name: "fps".into() }, "t")
+                .0,
             Response::Error { .. }
         ));
         assert_eq!(
-            e.apply(Request::RenameProfile { from: "fps".into(), to: "shooter".into() }, "t").0,
+            e.apply(
+                Request::RenameProfile {
+                    from: "fps".into(),
+                    to: "shooter".into()
+                },
+                "t"
+            )
+            .0,
             Response::Ack
         );
-        assert_eq!(e.apply(Request::DeleteProfile { name: "shooter".into() }, "t").0, Response::Ack);
+        assert_eq!(
+            e.apply(
+                Request::DeleteProfile {
+                    name: "shooter".into()
+                },
+                "t"
+            )
+            .0,
+            Response::Ack
+        );
         // cannot delete active
         assert!(matches!(
-            e.apply(Request::DeleteProfile { name: "default".into() }, "t").0,
+            e.apply(
+                Request::DeleteProfile {
+                    name: "default".into()
+                },
+                "t"
+            )
+            .0,
             Response::Error { .. }
         ));
     }
@@ -1423,7 +1523,10 @@ mod tests {
         );
         assert_eq!(ok.0, Response::Ack);
         // It actually took effect.
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_F1.0, 1)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_F1.0, 1)]
+        );
         // Unknown key name rejected.
         assert!(matches!(
             e.apply(
@@ -1464,13 +1567,21 @@ mod tests {
             "bind must be stored under the canonical key name `{canonical}`"
         );
         // And it resolves (the lookup path that the bug broke).
-        assert_eq!(keys(&e.handle_key(KeyCode::KEY_A, 1)), vec![(KeyCode::KEY_F1.0, 1)]);
+        assert_eq!(
+            keys(&e.handle_key(KeyCode::KEY_A, 1)),
+            vec![(KeyCode::KEY_F1.0, 1)]
+        );
     }
 
     #[test]
     fn set_lighting_active_emits_devicecmd_inactive_does_not() {
         let mut e = two_profile_engine();
-        e.apply(Request::CreateProfile { name: "other".into() }, "t");
+        e.apply(
+            Request::CreateProfile {
+                name: "other".into(),
+            },
+            "t",
+        );
         let light = LightingState {
             effect: Effect::Spectrum,
             brightness: 200,
@@ -1516,7 +1627,9 @@ mod tests {
         let mut e = two_profile_engine();
         let m = Macro {
             name: "m".into(),
-            steps: vec![MacroStep::Press { key: "KEY_A".into() }],
+            steps: vec![MacroStep::Press {
+                key: "KEY_A".into(),
+            }],
         };
         assert_eq!(
             e.apply(Request::SaveMacro { r#macro: m.clone() }, "t").0,
@@ -1534,10 +1647,19 @@ mod tests {
         );
         // Unknown macro -> Error.
         assert!(matches!(
-            e.apply(Request::GetMacro { name: "nope".into() }, "t").0,
+            e.apply(
+                Request::GetMacro {
+                    name: "nope".into()
+                },
+                "t"
+            )
+            .0,
             Response::Error { .. }
         ));
-        assert_eq!(e.apply(Request::DeleteMacro { name: "m".into() }, "t").0, Response::Ack);
+        assert_eq!(
+            e.apply(Request::DeleteMacro { name: "m".into() }, "t").0,
+            Response::Ack
+        );
         assert!(matches!(
             e.apply(Request::DeleteMacro { name: "m".into() }, "t").0,
             Response::Error { .. }
@@ -1689,7 +1811,10 @@ mod tests {
         // The snapshot the daemon would persist must still carry both verbatim.
         let snap = e.config_snapshot();
         assert_eq!(snap.input_mode, InputMode::Analog);
-        assert_eq!(snap.analog, analog, "analog map must survive a mutating edit");
+        assert_eq!(
+            snap.analog, analog,
+            "analog map must survive a mutating edit"
+        );
     }
 
     // ---- analog IPC (GetAnalogState / SetActuation) ----
@@ -1891,12 +2016,20 @@ mod tests {
         assert_eq!(update.key.key, "KEY_Q");
     }
 
-    /// Save semantics: the dirty flag drives `DaemonStatus::unsaved_changes`, and
-    /// `SaveProfile` is a pure ack (the daemon loop does the disk write + clears
-    /// the flag — `apply` itself never touches dirty).
+    /// Save semantics: unsaved state is a live DIFF against the last-saved
+    /// config (not a sticky flag), so a mutating edit lights it, a manual revert
+    /// back to the saved value clears it, and `SaveProfile` is a pure ack (the
+    /// daemon loop does the disk write and calls `mark_saved` — `apply` itself
+    /// never touches the saved snapshot).
     #[test]
-    fn dirty_flag_drives_status_unsaved_and_save_acks() {
+    fn unsaved_is_a_saved_config_diff_and_manual_revert_clears_it() {
         let mut e = Engine::new(cfg(vec![], vec![]));
+        let bind = |action: Option<BindAction>| Request::SetBind {
+            profile: "default".into(),
+            layer: Layer::Base,
+            key: "KEY_A".into(),
+            action,
+        };
 
         // Fresh engine: clean, status reports no unsaved changes.
         assert!(!e.is_dirty());
@@ -1905,22 +2038,97 @@ mod tests {
         };
         assert!(!s.unsaved_changes);
 
-        // The loop marks dirty after a mutating edit (apply does not do it itself).
-        e.mark_dirty();
+        // A mutating edit diverges the config from the saved snapshot.
+        e.apply(bind(Some(BindAction::Disable)), "v");
         assert!(e.is_dirty());
         let (Response::Status(s), _) = e.apply(Request::GetStatus, "v") else {
             panic!("expected status");
         };
         assert!(s.unsaved_changes, "status must surface pending edits");
 
-        // SaveProfile acks with no device commands and does NOT itself clear dirty
-        // — the loop clears it only after a successful persist.
+        // Manually reverting the edit restores the saved state: clean again.
+        e.apply(bind(None), "v");
+        assert!(!e.is_dirty(), "a reverted edit must not read as unsaved");
+
+        // SaveProfile acks with no device commands and does NOT itself record
+        // the save — the loop calls mark_saved only after a successful persist.
+        e.apply(bind(Some(BindAction::Disable)), "v");
         let (resp, cmds) = e.apply(Request::SaveProfile { name: None }, "v");
         assert_eq!(resp, Response::Ack);
         assert!(cmds.is_empty());
         assert!(e.is_dirty());
 
-        e.clear_dirty();
+        e.mark_saved();
         assert!(!e.is_dirty());
+    }
+
+    /// `DuplicateProfile` deep-copies binds/lighting/thumb mode under the new
+    /// name, drops the app link (auto-switch must stay unambiguous), and rejects
+    /// a missing source or an existing target.
+    #[test]
+    fn duplicate_profile_deep_copies_but_not_the_app_link() {
+        let mut config = cfg(vec![("KEY_A", BindAction::Disable)], vec![]);
+        let p = config.profiles.get_mut("default").unwrap();
+        p.linked_app = Some("game.exe".into());
+        p.thumb_axis_mode = ThumbAxisMode::Four;
+        let mut e = Engine::new(config);
+
+        let (resp, cmds) = e.apply(
+            Request::DuplicateProfile {
+                from: "default".into(),
+                to: "copy".into(),
+            },
+            "v",
+        );
+        assert_eq!(resp, Response::Ack);
+        assert!(cmds.is_empty());
+
+        let (Response::Profile(copy), _) = e.apply(
+            Request::GetProfile {
+                name: "copy".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the copied profile");
+        };
+        assert_eq!(copy.name, "copy");
+        assert_eq!(copy.base.get("KEY_A"), Some(&BindAction::Disable));
+        assert_eq!(copy.thumb_axis_mode, ThumbAxisMode::Four);
+        assert_eq!(copy.linked_app, None, "app link must not be copied");
+
+        // Source untouched.
+        let (Response::Profile(src), _) = e.apply(
+            Request::GetProfile {
+                name: "default".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the source profile");
+        };
+        assert_eq!(src.linked_app.as_deref(), Some("game.exe"));
+
+        // Missing source / existing target are rejected.
+        assert!(matches!(
+            e.apply(
+                Request::DuplicateProfile {
+                    from: "ghost".into(),
+                    to: "x".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        assert!(matches!(
+            e.apply(
+                Request::DuplicateProfile {
+                    from: "default".into(),
+                    to: "copy".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
     }
 }

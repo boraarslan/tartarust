@@ -101,8 +101,7 @@ fn grab_refuses_a_non_tartarus_device_but_unchecked_grabs_it() {
 
     // THE GUARANTEE: the production grab path REFUSES to EVIOCGRAB it. Were the
     // guard absent, this would grab (and lock out) a non-Tartarus device.
-    let err = input::grab(&mut node)
-        .expect_err("grab MUST refuse a non-Tartarus device");
+    let err = input::grab(&mut node).expect_err("grab MUST refuse a non-Tartarus device");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("not the Tartarus Pro") || msg.contains("refusing"),

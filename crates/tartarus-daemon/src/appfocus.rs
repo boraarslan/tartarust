@@ -433,7 +433,11 @@ mod tests {
     impl MockSource {
         fn new(items: Vec<&str>, gap: Duration) -> Self {
             MockSource {
-                items: items.iter().map(|s| s.to_string()).collect::<Vec<_>>().into_iter(),
+                items: items
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .into_iter(),
                 gap,
             }
         }
@@ -481,7 +485,12 @@ mod tests {
         let got = emitted_settled(vec!["a", "b", "a", "c"]);
         assert_eq!(
             got,
-            vec!["a".to_string(), "b".to_string(), "a".to_string(), "c".to_string()]
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "a".to_string(),
+                "c".to_string()
+            ]
         );
     }
 

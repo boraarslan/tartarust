@@ -62,8 +62,12 @@ mod tests {
     #[test]
     fn press_release_lower_to_key_events() {
         let steps = vec![
-            MacroStep::Press { key: "KEY_A".into() },
-            MacroStep::Release { key: "KEY_A".into() },
+            MacroStep::Press {
+                key: "KEY_A".into(),
+            },
+            MacroStep::Release {
+                key: "KEY_A".into(),
+            },
         ];
         let actions = lower(&steps);
         assert_eq!(actions.len(), 2);
@@ -84,9 +88,13 @@ mod tests {
     #[test]
     fn delays_preserved_and_summed() {
         let steps = vec![
-            MacroStep::Press { key: "KEY_H".into() },
+            MacroStep::Press {
+                key: "KEY_H".into(),
+            },
             MacroStep::Delay { ms: 50 },
-            MacroStep::Release { key: "KEY_H".into() },
+            MacroStep::Release {
+                key: "KEY_H".into(),
+            },
             MacroStep::Delay { ms: 30 },
         ];
         let actions = lower(&steps);
@@ -110,7 +118,9 @@ mod tests {
             MacroStep::Press {
                 key: "KEY_NOPE".into(),
             },
-            MacroStep::Press { key: "KEY_A".into() },
+            MacroStep::Press {
+                key: "KEY_A".into(),
+            },
         ];
         let actions = lower(&steps);
         // Only the valid one survives.

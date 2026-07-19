@@ -33,7 +33,14 @@ const COLOR2: Rgb = Rgb::new(0x00, 0xD4, 0xFF); // cyan
 
 /// Fixed effect list — same display order every time.
 const EFFECTS: [&str; 8] = [
-    "None", "Static", "Breathing", "Spectrum", "Wave", "Reactive", "Starlight", "Custom",
+    "None",
+    "Static",
+    "Breathing",
+    "Spectrum",
+    "Wave",
+    "Reactive",
+    "Starlight",
+    "Custom",
 ];
 
 /// Discriminant name for an effect — used for active-chip comparison.
@@ -55,12 +62,24 @@ fn default_effect(name: &str) -> Effect {
     match name {
         "None" => Effect::None,
         "Static" => Effect::Static { color: COLOR1 },
-        "Breathing" => Effect::Breathing { colors: vec![COLOR1] },
+        "Breathing" => Effect::Breathing {
+            colors: vec![COLOR1],
+        },
         "Spectrum" => Effect::Spectrum,
-        "Wave" => Effect::Wave { direction: WaveDirection::Right },
-        "Reactive" => Effect::Reactive { speed: 2, color: COLOR1 },
-        "Starlight" => Effect::Starlight { speed: 2, colors: vec![COLOR1] },
-        "Custom" => Effect::Custom { frame: vec![COLOR1; 21] },
+        "Wave" => Effect::Wave {
+            direction: WaveDirection::Right,
+        },
+        "Reactive" => Effect::Reactive {
+            speed: 2,
+            color: COLOR1,
+        },
+        "Starlight" => Effect::Starlight {
+            speed: 2,
+            colors: vec![COLOR1],
+        },
+        "Custom" => Effect::Custom {
+            frame: vec![COLOR1; 21],
+        },
         _ => Effect::None,
     }
 }

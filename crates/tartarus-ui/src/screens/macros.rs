@@ -3,7 +3,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{KeyPicker, PageHead};
-use crate::model::{adjust_index_after_remove, key_label, unique_name, Macro, MacroStep};
+use crate::model::{Macro, MacroStep, adjust_index_after_remove, key_label, unique_name};
 use crate::use_store;
 
 // ---------------------------------------------------------------------------
@@ -405,7 +405,10 @@ fn StepChip(index: usize, step: MacroStep, sel: usize) -> Element {
 
     let kind = step_kind(&step);
     let label = step_label(&step);
-    let class = format!("step-chip {kind}{}", if editing() { " editing" } else { "" });
+    let class = format!(
+        "step-chip {kind}{}",
+        if editing() { " editing" } else { "" }
+    );
 
     // The remove handler is shared by every chip kind.
     let remove = move |e: Event<MouseData>| {

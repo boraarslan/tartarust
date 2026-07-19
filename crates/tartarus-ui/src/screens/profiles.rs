@@ -9,7 +9,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{PageHead, Switch};
-use crate::model::{adjust_index_after_remove, unique_name, ProfileSummary};
+use crate::model::{ProfileSummary, adjust_index_after_remove, unique_name};
 use crate::use_store;
 
 #[component]
@@ -306,9 +306,11 @@ pub fn Profiles() -> Element {
                                             },
                                             if is_default { "Default ✓" } else { "Set as default" }
                                         }
-                                        // Duplicate: the daemon has no deep-copy, so this
-                                        // creates a NEW EMPTY profile named "<n> (copy)"
-                                        // and persists it. Binds/lighting are NOT copied.
+                                        // Duplicate: a daemon-side deep copy named
+                                        // "<n> (copy)" — binds, lighting, and thumb mode
+                                        // come along; the app link deliberately doesn't
+                                        // (two profiles linked to one app would make
+                                        // auto-switch ambiguous).
                                         button {
                                             class: "menu-item",
                                             onclick: move |_| {
@@ -320,7 +322,7 @@ pub fn Profiles() -> Element {
                                                     linked_app: None,
                                                 });
                                                 drop(w);
-                                                crate::ipc::create_profile(store, copy);
+                                                crate::ipc::duplicate_profile(store, name_dup.clone(), copy);
                                             },
                                             "Duplicate"
                                         }

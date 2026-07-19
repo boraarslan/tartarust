@@ -17,7 +17,7 @@ use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode};
 
 use tartarus_ipc::model::MacroStep;
 
-use crate::macros::{lower, MacroAction};
+use crate::macros::{MacroAction, lower};
 
 /// A command for the output thread.
 pub enum OutputCmd {

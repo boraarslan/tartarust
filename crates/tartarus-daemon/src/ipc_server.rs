@@ -148,11 +148,8 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
             Ok(Err(overflow)) => {
                 // Oversized line: reply with an error and close the connection
                 // rather than keep buffering.
-                let _ = write_response(
-                    &mut write_half,
-                    &Response::Error { message: overflow },
-                )
-                .await;
+                let _ =
+                    write_response(&mut write_half, &Response::Error { message: overflow }).await;
                 break;
             }
             Err(_idle) => break, // idle timeout: drop the connection
@@ -207,7 +204,11 @@ where
             if available.is_empty() {
                 // EOF. A non-empty buf is a final unterminated frame; hand it
                 // over — the next call returns Eof.
-                return Ok(if buf.is_empty() { Frame::Eof } else { Frame::Line });
+                return Ok(if buf.is_empty() {
+                    Frame::Eof
+                } else {
+                    Frame::Line
+                });
             }
             // Copy up to a newline, but never past the cap.
             match available.iter().position(|&b| b == b'\n') {
@@ -278,4 +279,3 @@ pub fn cleanup(path: &Path) {
         tracing::warn!(path = %path.display(), ?err, "failed to remove socket on shutdown");
     }
 }
-

@@ -38,7 +38,8 @@ fn ipc_server_handles_requests_over_a_real_socket() {
         .unwrap();
 
     // Unique temp socket for this test.
-    let socket = std::env::temp_dir().join(format!("tartarus-ipc-test-{}.sock", std::process::id()));
+    let socket =
+        std::env::temp_dir().join(format!("tartarus-ipc-test-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket);
 
     // Engine on a background thread, fed by the channel the daemon uses.
@@ -54,47 +55,47 @@ fn ipc_server_handles_requests_over_a_real_socket() {
     });
 
     rt.block_on(async {
-      tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        let (listener, _lock) = ipc_server::bind(&socket).await.expect("bind");
-        let serve_tx = engine_tx.clone();
-        let server = tokio::spawn(async move { ipc_server::serve(listener, serve_tx).await });
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let (listener, _lock) = ipc_server::bind(&socket).await.expect("bind");
+            let serve_tx = engine_tx.clone();
+            let server = tokio::spawn(async move { ipc_server::serve(listener, serve_tx).await });
 
-        // Ping -> Pong
-        let pong = roundtrip(&socket, r#"{"kind":"ping"}"#).await;
-        assert_eq!(
-            serde_json::from_str::<Response>(&pong).unwrap(),
-            Response::Pong
-        );
+            // Ping -> Pong
+            let pong = roundtrip(&socket, r#"{"kind":"ping"}"#).await;
+            assert_eq!(
+                serde_json::from_str::<Response>(&pong).unwrap(),
+                Response::Pong
+            );
 
-        // ListProfiles -> Profiles with the default profile active
-        let list = roundtrip(&socket, r#"{"kind":"list_profiles"}"#).await;
-        match serde_json::from_str::<Response>(&list).unwrap() {
-            Response::Profiles(pl) => {
-                assert_eq!(pl.active, "default");
-                assert_eq!(pl.profiles.len(), 1);
+            // ListProfiles -> Profiles with the default profile active
+            let list = roundtrip(&socket, r#"{"kind":"list_profiles"}"#).await;
+            match serde_json::from_str::<Response>(&list).unwrap() {
+                Response::Profiles(pl) => {
+                    assert_eq!(pl.active, "default");
+                    assert_eq!(pl.profiles.len(), 1);
+                }
+                other => panic!("expected Profiles, got {other:?}"),
             }
-            other => panic!("expected Profiles, got {other:?}"),
-        }
 
-        // A typed request also works end to end.
-        let req = serde_json::to_string(&Request::GetStatus).unwrap();
-        let status = roundtrip(&socket, &req).await;
-        assert!(matches!(
-            serde_json::from_str::<Response>(&status).unwrap(),
-            Response::Status(_)
-        ));
+            // A typed request also works end to end.
+            let req = serde_json::to_string(&Request::GetStatus).unwrap();
+            let status = roundtrip(&socket, &req).await;
+            assert!(matches!(
+                serde_json::from_str::<Response>(&status).unwrap(),
+                Response::Status(_)
+            ));
 
-        // Malformed JSON -> Error (not a crash, not a hang).
-        let err = roundtrip(&socket, "{ this is not json").await;
-        assert!(matches!(
-            serde_json::from_str::<Response>(&err).unwrap(),
-            Response::Error { .. }
-        ));
+            // Malformed JSON -> Error (not a crash, not a hang).
+            let err = roundtrip(&socket, "{ this is not json").await;
+            assert!(matches!(
+                serde_json::from_str::<Response>(&err).unwrap(),
+                Response::Error { .. }
+            ));
 
-        server.abort();
-      })
-      .await
-      .expect("IPC integration timed out (deadlock?)");
+            server.abort();
+        })
+        .await
+        .expect("IPC integration timed out (deadlock?)");
     });
 
     // Tear down: dropping engine_tx closes the channel so the engine thread ends.

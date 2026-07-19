@@ -885,6 +885,24 @@ body {
   font-family: var(--mono); font-size: 13px; font-weight: 600;
 }
 
+/* Caps whose actuation deviates from the defaults carry a small amber marker so
+   customized keys read at a glance on the Calibration board. */
+.cal-dot {
+  position: absolute; top: 5px; right: 5px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(245,185,66,0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Page-level calibration actions (the "Reset all to defaults" button), a thin
+   right-aligned row between the banner area and the stage. */
+.cal-toolbar {
+  display: flex; justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
 /* Calibration multi-select: caps in the selection set get an accent ring (drag
    or Shift+click). Distinct from the single `.selected` glow. */
 .keycap.multi, .spacebar.multi {

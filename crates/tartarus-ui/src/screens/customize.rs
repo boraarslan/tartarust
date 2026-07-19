@@ -18,7 +18,7 @@
 use dioxus::prelude::*;
 
 use crate::components::{KeyPicker, PageHead};
-use crate::model::{bind_value_label, key_label, BindAction, KeyId, Layer};
+use crate::model::{BindAction, KeyId, Layer, bind_value_label, key_label};
 use crate::use_store;
 
 #[component]
@@ -321,7 +321,12 @@ fn value_editor(
             }
         }
         Kind::Profile => {
-            let names: Vec<String> = store.read().profiles.iter().map(|p| p.name.clone()).collect();
+            let names: Vec<String> = store
+                .read()
+                .profiles
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
             let current = match &bind {
                 Some(BindAction::SwitchProfile { name }) => name.clone(),
                 _ => String::new(),

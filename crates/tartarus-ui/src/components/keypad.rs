@@ -90,6 +90,11 @@ pub fn Keypad(
     /// Caps currently in the multi-selection set (Calibration); highlighted.
     #[props(default = BTreeSet::new())]
     multi_selected: BTreeSet<KeyId>,
+    /// Analog caps whose actuation settings deviate from the defaults, keyed by
+    /// evdev name like `pressures`. Each gets a small marker dot so customized
+    /// keys read at a glance (Calibration; empty elsewhere).
+    #[props(default = BTreeSet::new())]
+    customized: BTreeSet<String>,
     /// Optional overlay (Calibration's actuation editor) rendered INSIDE the
     /// currently-selected cap so it floats beside the clicked key.
     children: Element,
@@ -104,6 +109,7 @@ pub fn Keypad(
             .as_ref()
             .and_then(|m| key.evdev().and_then(|n| m.get(&n).copied()))
     };
+    let custom_of = |key: KeyId| key.evdev().is_some_and(|n| customized.contains(&n));
 
     let space_press = press_of(KeyId::Space);
     let thumb_btn_press = press_of(KeyId::ThumbButton);
@@ -131,7 +137,8 @@ pub fn Keypad(
                                 let press = press_of(key_id);
                                 let modal = if host(key_id) { children.clone() } else { rsx! {} };
                                 let multi = multi_selected.contains(&key_id);
-                                rsx! { Cap { key_id, mode, layer, press, modal, on_cap_pointer, multi } }
+                                let custom = custom_of(key_id);
+                                rsx! { Cap { key_id, mode, layer, press, modal, on_cap_pointer, multi, custom } }
                             }
                         }
                     }
@@ -149,6 +156,7 @@ pub fn Keypad(
                 Space {
                     mode, layer, press: space_press, modal: space_modal,
                     on_cap_pointer, multi: multi_selected.contains(&KeyId::Space),
+                    custom: custom_of(KeyId::Space),
                 }
                 if !analog_only {
                     ThumbButton { mode, layer, press: thumb_btn_press, modal: thumb_btn_modal }
@@ -193,6 +201,7 @@ fn Cap(
     modal: Element,
     #[props(default = None)] on_cap_pointer: Option<EventHandler<CapPointer>>,
     #[props(default = false)] multi: bool,
+    #[props(default = false)] custom: bool,
 ) -> Element {
     let mut store = use_store();
     let s = store.read();
@@ -251,6 +260,9 @@ fn Cap(
             span { class: "cap-legend", "{legend}" }
             if !tag.is_empty() {
                 span { class: "cap-func", "{tag}" }
+            }
+            if custom {
+                span { class: "cal-dot", title: "Custom actuation" }
             }
             {modal}
         }
@@ -450,6 +462,7 @@ fn Space(
     modal: Element,
     #[props(default = None)] on_cap_pointer: Option<EventHandler<CapPointer>>,
     #[props(default = false)] multi: bool,
+    #[props(default = false)] custom: bool,
 ) -> Element {
     let mut store = use_store();
     let s = store.read();
@@ -499,6 +512,9 @@ fn Space(
                 }
             } else {
                 "THUMB · SPACE"
+            }
+            if custom {
+                span { class: "cal-dot", title: "Custom actuation" }
             }
             {modal}
         }

@@ -25,9 +25,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use tartarus_hid::Transport;
-use tartarus_ipc::model::{Effect, LightingState, Rgb, WaveDirection};
 use tartarus_ipc::DeviceInfo;
-use tartarus_protocol::{device, lighting, RazerReport};
+use tartarus_ipc::model::{Effect, LightingState, Rgb, WaveDirection};
+use tartarus_protocol::{RazerReport, device, lighting};
 
 /// Backoff before retrying a write that failed with a transient `EPIPE` STALL.
 const EPIPE_RETRY_DELAY: Duration = Duration::from_millis(20);
@@ -121,7 +121,10 @@ fn device_loop(rx: Receiver<Job>) {
             Some(t)
         }
         Err(err) => {
-            tracing::warn!(?err, "device control interface unavailable; lighting disabled");
+            tracing::warn!(
+                ?err,
+                "device control interface unavailable; lighting disabled"
+            );
             None
         }
     };
@@ -293,7 +296,10 @@ mod tests {
             // Builders return a valid report; just ensure no panic and the CRC
             // is set (report is constructed).
             let report = effect_report(e);
-            assert!(report.verify_crc(), "effect {e:?} produced an invalid report");
+            assert!(
+                report.verify_crc(),
+                "effect {e:?} produced an invalid report"
+            );
         }
     }
 

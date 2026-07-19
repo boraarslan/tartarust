@@ -145,11 +145,12 @@ pub fn spawn_engine(
                             engine.set_device_info(device.query_info());
                         }
                         // Save semantics: mutating edits apply LIVE (device
-                        // commands fire below) but are NOT written to disk — they
-                        // only mark the engine dirty. An explicit `SaveProfile`
-                        // is the sole disk write.
+                        // commands fire below) but are NOT written to disk. An
+                        // explicit `SaveProfile` is the sole disk write. The
+                        // unsaved-changes state needs no bookkeeping here — the
+                        // engine derives it by diffing the live config against
+                        // its last-saved snapshot.
                         let is_save = matches!(request, tartarus_ipc::Request::SaveProfile { .. });
-                        let dirties = marks_dirty(&request);
                         let (response, cmds) = engine.apply(request, daemon_version);
                         for cmd in cmds {
                             device.send(cmd);
@@ -157,10 +158,11 @@ pub fn spawn_engine(
                         if is_save {
                             // Persist BEFORE replying so the Save reply reflects
                             // the on-disk outcome: a failed write returns an Error
-                            // (and keeps dirty set, so the user can retry) instead
-                            // of a misleading Ack that would mask silent data loss.
+                            // (and leaves the saved snapshot stale, so the state
+                            // stays unsaved and the user can retry) instead of a
+                            // misleading Ack that would mask silent data loss.
                             let reply_msg = if persist(&engine, &config_path) {
-                                engine.clear_dirty();
+                                engine.mark_saved();
                                 response
                             } else {
                                 tartarus_ipc::Response::Error {
@@ -172,15 +174,7 @@ pub fn spawn_engine(
                             };
                             let _ = reply.send(reply_msg);
                         } else {
-                            // Mark dirty only when the edit actually changed state.
-                            // A REJECTED mutation returns `Response::Error` and
-                            // mutates nothing (every handler validates before it
-                            // writes), so it must not light the unsaved indicator.
-                            let mark = mark_dirty_after(dirties, &response);
                             let _ = reply.send(response);
-                            if mark {
-                                engine.mark_dirty();
-                            }
                         }
                     }
                     EngineMsg::DeviceInfo(info) => engine.set_device_info(info),
@@ -229,44 +223,10 @@ fn emit_and_dispatch(
     }
 }
 
-/// Whether a request changes the persisted config, so it should mark the engine
-/// dirty (a pending, unsaved session edit).
-///
-/// Excludes `SwitchProfile` (it changes only the live active profile, which is
-/// never persisted — `config_snapshot` writes `configured_default`) and
-/// `SaveProfile` (the save trigger itself, handled separately).
-pub fn marks_dirty(req: &tartarus_ipc::Request) -> bool {
-    use tartarus_ipc::Request::*;
-    matches!(
-        req,
-        CreateProfile { .. }
-            | RenameProfile { .. }
-            | DeleteProfile { .. }
-            | SetProfileLinkedApp { .. }
-            | SetDefaultProfile { .. }
-            | SetThumbAxisMode { .. }
-            | SetBind { .. }
-            | SetLighting { .. }
-            | SetBrightness { .. }
-            | SaveMacro { .. }
-            | DeleteMacro { .. }
-            | SetAutoSwitch { .. }
-            | SetActuation { .. }
-    )
-}
-
-/// Whether an applied non-save request should mark the engine dirty: it must be
-/// a config-changing request (`dirties`) AND the engine must have ACCEPTED it. A
-/// rejected request returns [`tartarus_ipc::Response::Error`] and mutates nothing
-/// (every `apply` handler validates before it writes), so it leaves no pending
-/// change and must not surface the Save affordance.
-fn mark_dirty_after(dirties: bool, response: &tartarus_ipc::Response) -> bool {
-    dirties && !matches!(response, tartarus_ipc::Response::Error { .. })
-}
-
 /// Persist the engine's current config to disk (atomic). Returns `true` on a
-/// successful write (so the caller can clear the dirty flag), `false` on error
-/// (dirty stays set, so the user can retry Save).
+/// successful write (so the caller can record the saved snapshot), `false` on
+/// error (the snapshot stays stale, so the state reads unsaved and the user can
+/// retry Save).
 fn persist(engine: &Engine, path: &Path) -> bool {
     let config: Config = engine.config_snapshot();
     match config.save(path) {
@@ -301,84 +261,8 @@ fn launch_program(argv: Vec<String>) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{mark_dirty_after, marks_dirty};
-    use tartarus_ipc::{Layer, Request, Response};
-
-    // NOTE: the hybrid claimed-key drop set is derived from the analog
-    // actuator ([`crate::analog_source::Actuator::claimed_codes`]) and tested
-    // there — the actuator is the single authority for what analog can
-    // synthesize, so the set inherits its validity checks by construction.
-
-    /// The dirty mark must depend on BOTH the request type and the apply outcome:
-    /// a dirtying request the engine REJECTED (Error) changed no state, so it must
-    /// not light the unsaved indicator (review finding).
-    #[test]
-    fn rejected_mutation_does_not_mark_dirty() {
-        let edit = Request::SetBind {
-            profile: "p".into(),
-            layer: Layer::Base,
-            key: "KEY_A".into(),
-            action: None,
-        };
-        let dirties = marks_dirty(&edit);
-        // Accepted (Ack) dirtying edit -> mark dirty.
-        assert!(mark_dirty_after(dirties, &Response::Ack));
-        // Rejected (Error) dirtying edit -> do NOT mark dirty (no state change).
-        assert!(!mark_dirty_after(
-            dirties,
-            &Response::Error {
-                message: "x".into()
-            }
-        ));
-        // A non-dirtying request never marks dirty, whatever the response.
-        assert!(!mark_dirty_after(
-            marks_dirty(&Request::GetStatus),
-            &Response::Ack
-        ));
-    }
-
-    /// `marks_dirty` is the daemon's "this edit leaves unsaved state" predicate.
-    /// It must cover every config-changing request, but NOT `SwitchProfile` (it
-    /// changes only the live active profile, which is never persisted), NOT
-    /// `SaveProfile` (the commit trigger itself), and NOT any read.
-    #[test]
-    fn marks_dirty_covers_edits_excludes_switch_save_and_reads() {
-        // Content edits.
-        assert!(marks_dirty(&Request::SetBind {
-            profile: "p".into(),
-            layer: Layer::Base,
-            key: "KEY_A".into(),
-            action: None,
-        }));
-        assert!(marks_dirty(&Request::SetActuation {
-            index: 0,
-            actuation_point: 0x60,
-            release_point: 0x50,
-            second_actuation_point: None,
-            second_action: None,
-        }));
-        assert!(marks_dirty(&Request::SetLighting {
-            profile: None,
-            lighting: tartarus_ipc::LightingState::default(),
-        }));
-        // Structural / management edits.
-        assert!(marks_dirty(&Request::CreateProfile { name: "p".into() }));
-        assert!(marks_dirty(&Request::DeleteProfile { name: "p".into() }));
-        assert!(marks_dirty(&Request::SetDefaultProfile {
-            name: "p".into()
-        }));
-        assert!(marks_dirty(&Request::DeleteMacro { name: "m".into() }));
-        assert!(marks_dirty(&Request::SetAutoSwitch { enabled: true }));
-
-        // Excluded: switching active profile persists nothing.
-        assert!(!marks_dirty(&Request::SwitchProfile { name: "p".into() }));
-        // Excluded: Save is the commit, handled separately.
-        assert!(!marks_dirty(&Request::SaveProfile { name: None }));
-        // Excluded: reads never dirty.
-        assert!(!marks_dirty(&Request::GetStatus));
-        assert!(!marks_dirty(&Request::ListProfiles));
-        assert!(!marks_dirty(&Request::GetAnalogState));
-    }
-}
+// NOTE: the hybrid claimed-key drop set is derived from the analog actuator
+// ([`crate::analog_source::Actuator::claimed_codes`]) and tested there — the
+// actuator is the single authority for what analog can synthesize, so the set
+// inherits its validity checks by construction. Unsaved-changes semantics (a
+// live diff against the last-saved config) are tested on the engine.

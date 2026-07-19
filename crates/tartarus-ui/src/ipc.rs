@@ -39,7 +39,10 @@ pub async fn send_on(socket: &std::path::Path, request: Request) -> Result<Respo
         .write_all(line.as_bytes())
         .await
         .map_err(|e| format!("write: {e}"))?;
-    write_half.flush().await.map_err(|e| format!("flush: {e}"))?;
+    write_half
+        .flush()
+        .await
+        .map_err(|e| format!("flush: {e}"))?;
 
     let mut reader = BufReader::new(read_half).lines();
     match reader.next_line().await.map_err(|e| format!("read: {e}"))? {
@@ -60,16 +63,17 @@ async fn resync(mut store: dioxus::prelude::Signal<AppState>) {
     }
 }
 
-/// Whether a request changes persisted config and so leaves unsaved session
-/// edits (mirrors the daemon's `pipeline::marks_dirty`). The UI flips
-/// `AppState::unsaved` true for these so the Save affordance appears immediately,
-/// rather than waiting for the next status poll. `SwitchProfile`/reads/`Save`
-/// are excluded.
+/// Whether a request changes persisted config and so can leave unsaved session
+/// edits. The UI flips `AppState::unsaved` true for these so the Save affordance
+/// appears immediately, then corrects it from the daemon's authoritative
+/// live-vs-disk diff once the request completes (see [`fire_or_resync`]).
+/// `SwitchProfile`/reads/`Save` are excluded.
 fn dirties(request: &Request) -> bool {
     use Request::*;
     matches!(
         request,
         CreateProfile { .. }
+            | DuplicateProfile { .. }
             | RenameProfile { .. }
             | DeleteProfile { .. }
             | SetProfileLinkedApp { .. }
@@ -91,9 +95,13 @@ fn dirties(request: &Request) -> bool {
 /// edit stays local and the offline badge already signals the disconnect.
 ///
 /// Dirtying mutations also flip `AppState::unsaved` true optimistically (the
-/// daemon applies them live but defers the disk write until `SaveProfile`).
+/// daemon applies them live but defers the disk write until `SaveProfile`), then
+/// re-pull the authoritative flag once the daemon accepts: the daemon computes
+/// unsaved as a live-vs-disk DIFF, so an edit that manually reverts state back
+/// to the saved config clears the Save affordance instead of leaving it stuck.
 pub fn fire_or_resync(mut store: dioxus::prelude::Signal<AppState>, request: Request) {
-    if dirties(&request) {
+    let dirtying = dirties(&request);
+    if dirtying {
         use dioxus::prelude::WritableExt;
         store.with_mut(|s| s.unsaved = true);
     }
@@ -103,10 +111,30 @@ pub fn fire_or_resync(mut store: dioxus::prelude::Signal<AppState>, request: Req
                 tracing_warn(&format!("daemon rejected mutation: {message}; resyncing"));
                 resync(store).await;
             }
-            Ok(_) => mark_online(store),
+            Ok(_) => {
+                mark_online(store);
+                if dirtying {
+                    refresh_unsaved(store).await;
+                }
+            }
             Err(e) => mark_offline(store, &e),
         }
     });
+}
+
+/// Overwrite the optimistic `unsaved` flag with the daemon's authoritative
+/// answer (a live-vs-disk config diff). No-op on any failure — the optimistic
+/// value stands, and the offline path is already handled by the caller.
+async fn refresh_unsaved(mut store: dioxus::prelude::Signal<AppState>) {
+    use dioxus::prelude::WritableExt;
+    if let Ok(Response::Status(status)) = send(Request::GetStatus).await {
+        store.with_mut(|s| {
+            s.unsaved = status.unsaved_changes;
+            if let Some(st) = s.status.as_mut() {
+                st.unsaved_changes = status.unsaved_changes;
+            }
+        });
+    }
 }
 
 /// Commit all pending session changes to disk (the Save affordance). On a
@@ -302,7 +330,10 @@ pub fn set_bind(
 }
 
 /// Apply lighting to the active profile.
-pub fn set_lighting(store: dioxus::prelude::Signal<AppState>, lighting: tartarus_ipc::LightingState) {
+pub fn set_lighting(
+    store: dioxus::prelude::Signal<AppState>,
+    lighting: tartarus_ipc::LightingState,
+) {
     fire_or_resync(
         store,
         Request::SetLighting {
@@ -409,6 +440,12 @@ pub fn create_profile(store: dioxus::prelude::Signal<AppState>, name: String) {
     fire_or_resync(store, Request::CreateProfile { name });
 }
 
+/// Deep-copy a profile (binds, lighting, thumb mode — not the app link) under a
+/// new name.
+pub fn duplicate_profile(store: dioxus::prelude::Signal<AppState>, from: String, to: String) {
+    fire_or_resync(store, Request::DuplicateProfile { from, to });
+}
+
 pub fn rename_profile(store: dioxus::prelude::Signal<AppState>, from: String, to: String) {
     fire_or_resync(store, Request::RenameProfile { from, to });
 }
@@ -501,14 +538,23 @@ mod tests {
                 }),
                 Request::ListProfiles => Response::Profiles(ProfileList {
                     profiles: vec![
-                        ProfileSummary { name: "Live".into(), linked_app: Some("game.exe".into()) },
-                        ProfileSummary { name: "Other".into(), linked_app: None },
+                        ProfileSummary {
+                            name: "Live".into(),
+                            linked_app: Some("game.exe".into()),
+                        },
+                        ProfileSummary {
+                            name: "Other".into(),
+                            linked_app: None,
+                        },
                     ],
                     active: "Live".into(),
                 }),
                 Request::GetProfile { name } => {
                     let mut p = Profile::new(name);
-                    p.lighting = LightingState { effect: Effect::Spectrum, brightness: 200 };
+                    p.lighting = LightingState {
+                        effect: Effect::Spectrum,
+                        brightness: 200,
+                    };
                     Response::Profile(p)
                 }
                 Request::GetDeviceInfo => Response::DeviceInfo(DeviceInfo {
@@ -526,9 +572,13 @@ mod tests {
                 Request::GetMacro { name } => Response::Macro(tartarus_ipc::Macro {
                     name,
                     steps: vec![
-                        tartarus_ipc::MacroStep::Press { key: "KEY_R".into() },
+                        tartarus_ipc::MacroStep::Press {
+                            key: "KEY_R".into(),
+                        },
                         tartarus_ipc::MacroStep::Delay { ms: 25 },
-                        tartarus_ipc::MacroStep::Release { key: "KEY_R".into() },
+                        tartarus_ipc::MacroStep::Release {
+                            key: "KEY_R".into(),
+                        },
                     ],
                 }),
                 // GetAnalogState: an active keypad with one configured key, so the
@@ -601,7 +651,10 @@ mod tests {
         // names (loaded as name-only stubs — there is no GetMacro to fetch steps).
         assert_eq!(live.macros.len(), 2, "macros overlaid from ListMacros");
         assert_eq!(live.macros[0].name, "M1");
-        assert!(live.macros[0].steps.is_empty(), "live macros load name-only");
+        assert!(
+            live.macros[0].steps.is_empty(),
+            "live macros load name-only"
+        );
 
         server.await.unwrap();
         let _ = std::fs::remove_file(&sock);
@@ -697,7 +750,12 @@ mod tests {
             Response::Macro(m) => {
                 assert_eq!(m.name, "M1");
                 assert_eq!(m.steps.len(), 3, "full body, not a name-only stub");
-                assert_eq!(m.steps[0], MacroStep::Press { key: "KEY_R".into() });
+                assert_eq!(
+                    m.steps[0],
+                    MacroStep::Press {
+                        key: "KEY_R".into()
+                    }
+                );
                 assert_eq!(m.steps[1], MacroStep::Delay { ms: 25 });
             }
             other => panic!("expected Macro, got {other:?}"),
@@ -803,12 +861,9 @@ mod tests {
             write_half.flush().await.unwrap();
         });
 
-        let resp = send_on(
-            &sock,
-            Request::SetBrightness { level: 128 },
-        )
-        .await
-        .expect("transport ok");
+        let resp = send_on(&sock, Request::SetBrightness { level: 128 })
+            .await
+            .expect("transport ok");
         // The rejection is an in-band Error the client resyncs on...
         assert!(matches!(resp, Response::Error { .. }));
         server.await.unwrap();
@@ -817,9 +872,11 @@ mod tests {
         // ...whereas no daemon at all is a transport Err (offline: edit stays
         // local, no resync). Confirm the two are distinguishable.
         let absent = temp_socket("reject-absent");
-        assert!(send_on(&absent, Request::SetBrightness { level: 1 })
-            .await
-            .is_err());
+        assert!(
+            send_on(&absent, Request::SetBrightness { level: 1 })
+                .await
+                .is_err()
+        );
     }
 
     /// The debounced rename (review #4) must send `RenameProfile{from, to}` with
@@ -850,7 +907,10 @@ mod tests {
         let line = captured.await.unwrap();
         match serde_json::from_str::<Request>(&line).unwrap() {
             Request::RenameProfile { from, to } => {
-                assert_eq!(from, "FPS", "from must be the original, not the edited name");
+                assert_eq!(
+                    from, "FPS",
+                    "from must be the original, not the edited name"
+                );
                 assert_eq!(to, "FPSX");
             }
             other => panic!("expected RenameProfile, got {other:?}"),
@@ -858,4 +918,3 @@ mod tests {
         let _ = std::fs::remove_file(&sock);
     }
 }
-

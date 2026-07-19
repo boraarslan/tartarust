@@ -78,7 +78,9 @@ pub enum InputMode {
 }
 
 /// Default actuation point: the pressure at which a key registers as DOWN.
-pub const DEFAULT_ACTUATION_POINT: u8 = 0x60;
+/// Re-exported from the contract crate so the UI's "reset to default" and
+/// custom-value indicator use the exact same value.
+pub const DEFAULT_ACTUATION_POINT: u8 = tartarus_ipc::DEFAULT_ACTUATION_POINT;
 /// Default hysteresis margin: how far below the actuation point pressure must
 /// fall to register a release. Prevents chatter around the threshold.
 pub const DEFAULT_HYSTERESIS: u8 = 0x10;
@@ -157,6 +159,11 @@ fn default_actuation_point() -> u8 {
 fn default_release_point() -> u8 {
     DEFAULT_ACTUATION_POINT.saturating_sub(DEFAULT_HYSTERESIS)
 }
+
+// The contract crate publishes the derived release default as a plain constant
+// (clients can't compute actuation − hysteresis); keep the two in lockstep.
+const _: () =
+    assert!(DEFAULT_ACTUATION_POINT - DEFAULT_HYSTERESIS == tartarus_ipc::DEFAULT_RELEASE_POINT);
 
 /// Errors loading or validating a config.
 #[derive(Debug, thiserror::Error)]
