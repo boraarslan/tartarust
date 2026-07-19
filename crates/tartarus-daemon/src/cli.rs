@@ -1,4 +1,7 @@
-//! `tartarus-daemon` binary — the single device owner + IPC server.
+//! The `tartarus-daemon` binary entry point — the single device owner + IPC
+//! server. Lives in the lib (not a crate-local `main.rs`) so the workspace's
+//! root package can expose it as a thin `src/bin/` shim and one
+//! `cargo install --path .` ships every binary.
 //!
 //! Subcommands:
 //!   * `run` — discover + grab the device, load config, run the remap engine
@@ -23,16 +26,16 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use evdev::{Device, EventSummary};
 
-use tartarus_daemon::analog_source;
-use tartarus_daemon::appfocus;
-use tartarus_daemon::device;
-use tartarus_daemon::engine::Engine;
-use tartarus_daemon::input::{self, NodeKind};
-use tartarus_daemon::ipc_server::{self, EngineMsg};
-use tartarus_daemon::output;
-use tartarus_daemon::pipeline;
-use tartarus_daemon::state::{Config, InputMode};
-use tartarus_daemon::tray;
+use crate::analog_source;
+use crate::appfocus;
+use crate::device;
+use crate::engine::Engine;
+use crate::input::{self, NodeKind};
+use crate::ipc_server::{self, EngineMsg};
+use crate::output;
+use crate::pipeline;
+use crate::state::{Config, InputMode};
+use crate::tray;
 
 const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -65,7 +68,9 @@ enum Cmd {
     DiscoverKeys,
 }
 
-fn main() -> Result<()> {
+/// Binary entry point: parse args, dispatch to the subcommand. Called by the
+/// root package's `src/bin/tartarus-daemon.rs` shim.
+pub fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

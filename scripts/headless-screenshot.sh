@@ -53,6 +53,13 @@ fi
 export XDG_RUNTIME_DIR="$RUNTIME_DIR"
 export XDG_SESSION_TYPE=wayland
 
+# --- rusty-tartarus UI: keep the harness inert --------------------------------
+# The harness runs the UI with NO daemon on purpose; without this gate the UI
+# would autostart one, which EVIOCGRABs the real keypad while the user types.
+# Desktop-entry/icon install from a throwaway screenshot run is also unwanted.
+export TARTARUS_UI_NO_AUTOSTART=1
+export TARTARUS_UI_NO_DESKTOP_INSTALL=1
+
 # --- GTK / webkit2gtk: force Wayland + software compositing ------------------
 export GDK_BACKEND=wayland
 export WEBKIT_DISABLE_COMPOSITING_MODE=1

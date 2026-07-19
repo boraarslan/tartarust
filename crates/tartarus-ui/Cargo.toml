@@ -6,16 +6,15 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Dioxus desktop UI for the Tartarus Pro (Synapse-style, original dark theme)."
-
-[[bin]]
-name = "tartarus-ui"
-path = "src/main.rs"
+# Lib-only: the `tartarus-ui` bin target lives in the workspace's root package
+# (a thin shim over `run_app`) so one `cargo install` ships all bins.
 
 [dependencies]
 tartarus-ipc = { workspace = true }
 dioxus = { version = "0.7", features = ["desktop", "router"] }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true

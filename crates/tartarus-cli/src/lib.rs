@@ -1,5 +1,9 @@
 //! `tartarus` — command-line client for the daemon.
 //!
+//! Lib-only crate: the whole binary lives here behind [`main`], and the
+//! workspace's root package exposes it as the `tartarus` bin via a thin
+//! `src/bin/` shim, so one `cargo install --path .` ships every binary.
+//!
 //! Two families of subcommands:
 //!   * **Device-owner passthroughs** (`discover`, `discover-keys`, `run`) shell
 //!     out to the `tartarus-daemon` binary — it is the process that grabs the
@@ -110,7 +114,9 @@ enum LightingOp {
     },
 }
 
-fn main() -> Result<()> {
+/// Binary entry point: parse args, dispatch. Called by the root package's
+/// `src/bin/tartarus.rs` shim.
+pub fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         // Passthroughs.

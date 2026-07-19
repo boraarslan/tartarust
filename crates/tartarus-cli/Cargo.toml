@@ -6,10 +6,8 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Command-line client for the Tartarus Pro daemon (scriptable control + diagnostics)."
-
-[[bin]]
-name = "tartarus"
-path = "src/main.rs"
+# Lib-only: the `tartarus` bin target lives in the workspace's root package
+# (a thin shim over `main`) so one `cargo install` ships all bins.
 
 [dependencies]
 tartarus-ipc = { workspace = true }

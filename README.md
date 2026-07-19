@@ -45,12 +45,46 @@ directly. The daemon exposes its state over a Unix socket at
 ## Build
 
 ```sh
-cargo build --release        # workspace (the UI needs webkit2gtk-4.1 + gtk3)
-cargo test                   # unit + integration tests
+cargo build --release        # all three binaries (the UI needs webkit2gtk-4.1 + gtk3)
+cargo test --workspace       # unit + integration tests
+cargo install --path .       # installs tartarus-daemon, tartarus, tartarus-ui
 ```
+
+The bin targets live in the root `rusty-tartarus` package (thin shims over the
+member crates), so a single `cargo install` ships all three binaries.
 
 System deps (Arch): `webkit2gtk-4.1 gtk3 libusb hidapi` plus `cage` + `grim` for
 headless UI dev.
+
+## Install
+
+```sh
+cargo install --path .       # installs tartarus-daemon, tartarus, tartarus-ui
+```
+
+Upgrading from the old per-crate installs (`cargo install --path
+crates/tartarus-cli` etc.)? Cargo refuses to overwrite binaries owned by a
+different package — run it once with `--force` to migrate them to the root
+`rusty-tartarus` package.
+
+Before first use, set up device permissions (udev rule / `input` group) — see
+**Device access** below; the daemon cannot grab the keypad without them.
+
+The installed `tartarus-ui` integrates itself with the desktop on launch:
+
+- **Desktop entry + icon** — the first launch writes
+  `~/.local/share/applications/tartarus-ui.desktop` (named after the binary so
+  window managers match the window to the entry) and a scalable icon
+  (refreshed automatically if the binary moves). To (re)install explicitly
+  without opening a window: `tartarus-ui install-desktop`.
+- **Daemon autostart** — if no daemon answers on the control socket, the UI
+  spawns `tartarus-daemon run` detached and connects once it is up. The
+  daemon's output goes to `~/.local/state/rusty-tartarus/daemon.log`. If the
+  daemon is missing or fails to start, the UI stays in its offline mode.
+
+Opt-outs (set to `1`): `TARTARUS_UI_NO_DESKTOP_INSTALL` skips the entry/icon
+install, `TARTARUS_UI_NO_AUTOSTART` skips the daemon probe/spawn (the headless
+screenshot harness sets both).
 
 ## Device access
 
@@ -95,7 +129,7 @@ It is run exclusively inside a headless [`cage`](https://github.com/cage-kiosk/c
 compositor and screenshotted with `grim`:
 
 ```sh
-cargo build -p tartarus-ui
+cargo build --bin tartarus-ui
 ./scripts/headless-screenshot.sh ./target/debug/tartarus-ui   # -> screenshots/ui.png
 ```
 

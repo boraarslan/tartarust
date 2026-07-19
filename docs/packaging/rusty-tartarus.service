@@ -19,8 +19,11 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-# Adjust to your install location (e.g. `cargo install --path crates/tartarus-cli`
-# puts `tartarus` in ~/.cargo/bin; the daemon binary is `tartarus-daemon`).
+# Adjust to your install location (`cargo install --path .` from the repo root
+# puts all three binaries — `tartarus-daemon`, `tartarus`, `tartarus-ui` — in
+# ~/.cargo/bin; add `--force` once if upgrading from the old per-crate
+# `cargo install --path crates/...` instructions, which registered the same
+# binary names under different package names).
 ExecStart=%h/.cargo/bin/tartarus-daemon run
 Restart=on-failure
 RestartSec=2

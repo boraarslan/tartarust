@@ -8,6 +8,19 @@ members = [
     "crates/tartarus-cli",
     "crates/tartarus-ui",
 ]
+# With a root [package] present, cargo's default member set silently collapses
+# to JUST the root package — a bare `cargo test` would then build only the
+# three empty bin shims and report green with zero tests run. List everything
+# so the muscle-memory `cargo build`/`cargo test` keep covering the workspace.
+default-members = [
+    ".",
+    "crates/tartarus-protocol",
+    "crates/tartarus-hid",
+    "crates/tartarus-ipc",
+    "crates/tartarus-daemon",
+    "crates/tartarus-cli",
+    "crates/tartarus-ui",
+]
 
 [workspace.package]
 edition = "2024"
@@ -35,12 +48,50 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 tartarus-protocol = { path = "crates/tartarus-protocol" }
 tartarus-hid = { path = "crates/tartarus-hid" }
 tartarus-ipc = { path = "crates/tartarus-ipc" }
+tartarus-daemon = { path = "crates/tartarus-daemon" }
+tartarus-cli = { path = "crates/tartarus-cli" }
+tartarus-ui = { path = "crates/tartarus-ui" }
 
 [workspace.lints.rust]
 unused_must_use = "warn"
 
 [workspace.lints.clippy]
 uninlined_format_args = "allow"
+
+# Root package: exists ONLY so one `cargo install --path .` ships all three
+# binaries (cargo installs a single package per invocation). The bins are thin
+# `src/bin/*.rs` shims calling a public entry fn in each member crate — all real
+# code stays in the crates. A root package is implicitly a workspace member.
+[package]
+name = "rusty-tartarus"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Razer Tartarus Pro userspace driver suite: daemon + CLI + UI in one install."
+
+# Preserve the exact per-crate binary names (`tartarus` is the CLI's name).
+[[bin]]
+name = "tartarus-daemon"
+path = "src/bin/tartarus-daemon.rs"
+
+[[bin]]
+name = "tartarus"
+path = "src/bin/tartarus.rs"
+
+[[bin]]
+name = "tartarus-ui"
+path = "src/bin/tartarus-ui.rs"
+
+[dependencies]
+tartarus-daemon = { workspace = true }
+tartarus-cli = { workspace = true }
+tartarus-ui = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true
 
 [profile.release]
 lto = "thin"

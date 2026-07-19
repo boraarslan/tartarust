@@ -6,10 +6,8 @@ license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Background service: owns the device, runs the evdev->uinput remap engine, serves IPC."
-
-[[bin]]
-name = "tartarus-daemon"
-path = "src/main.rs"
+# Lib-only: the `tartarus-daemon` bin target lives in the workspace's root
+# package (a thin shim over `cli::main`) so one `cargo install` ships all bins.
 
 [dependencies]
 tartarus-protocol = { workspace = true }

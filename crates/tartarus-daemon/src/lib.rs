@@ -25,6 +25,7 @@
 
 pub mod analog_source;
 pub mod appfocus;
+pub mod cli;
 pub mod device;
 pub mod engine;
 pub mod input;

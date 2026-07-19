@@ -4,7 +4,7 @@
 # its actuation point — so the 20 grid keys become analog.
 #
 #   cp docs/examples/config-analog.toml ~/.config/rusty-tartarus/config.toml
-#   cargo run --release -p tartarus-daemon -- run     # Ctrl-C restores normal mode
+#   cargo run --release --bin tartarus-daemon -- run  # Ctrl-C restores normal mode
 #
 # What to try (focus a text editor first):
 #   * Press grid keys with a LIGHT touch -> nothing; press past ~halfway -> they
