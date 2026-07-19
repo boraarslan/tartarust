@@ -3,18 +3,19 @@
 
 use dioxus::prelude::*;
 
-/// The standard screen header: title + one-line subtitle.
+/// The screen's context line. The active tab already names the screen, so the
+/// head deliberately carries no title — just one quiet instructional sentence.
 #[component]
-pub fn PageHead(title: &'static str, sub: &'static str) -> Element {
+pub fn PageHead(sub: &'static str) -> Element {
     rsx! {
         div { class: "page-head",
-            h1 { class: "page-title", "{title}" }
             p { class: "page-sub", "{sub}" }
         }
     }
 }
 
-/// A labelled range slider with a monospace value readout.
+/// A labelled range slider with a monospace value readout. An empty `label`
+/// skips the field label row (for sliders whose card title already names them).
 #[component]
 pub fn Slider(
     label: String,
@@ -23,7 +24,7 @@ pub fn Slider(
     min: f64,
     max: f64,
     step: f64,
-    /// Pre-formatted readout (e.g. "1.5 mm" or "75%").
+    /// Pre-formatted readout (e.g. "192 (75%)").
     readout: String,
     /// Amber variant (used for the secondary actuation point).
     #[props(default = false)]
@@ -33,7 +34,9 @@ pub fn Slider(
     let cls = if amber { "slider amber" } else { "slider" };
     rsx! {
         div { class: "field",
-            label { class: "field-label", "{label}" }
+            if !label.is_empty() {
+                label { class: "field-label", "{label}" }
+            }
             div { class: "slider-row",
                 input {
                     class: "{cls}",

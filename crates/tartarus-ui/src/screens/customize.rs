@@ -27,10 +27,7 @@ pub fn Customize() -> Element {
     let selected = store.read().selected;
 
     rsx! {
-        PageHead {
-            title: "Customize",
-            sub: "Click any input to remap it. The Hypershift keypad below edits the secondary layer held under your thumb.",
-        }
+        PageHead { sub: "Click any input to remap it. The Hypershift keypad below edits the secondary layer held under your thumb." }
 
         div { class: "work",
             // Stage: two stacked keypads — Base above, Hypershift below. Each
@@ -158,7 +155,7 @@ fn BindEditor() -> Element {
                 div { class: "empty-inspector",
                     div { class: "big", "⟳" }
                     div { "The scroll wheel reports a relative axis, not a key —" }
-                    div { style: "color:var(--text-mute);", "remapping it is pending analog/axis support." }
+                    div { style: "color:var(--mute);", "remapping it is pending analog/axis support." }
                 }
             }
         };
@@ -353,10 +350,10 @@ fn value_editor(
         }
         // Value-less kinds: just confirm the active state (the chip committed it).
         Kind::Hypershift => rsx! {
-            div { class: "field-value", style: "color:var(--text-mute);", "Holds the secondary layer while pressed." }
+            div { class: "field-value", style: "color:var(--mute);", "Holds the secondary layer while pressed." }
         },
         Kind::Disable => rsx! {
-            div { class: "field-value", style: "color:var(--text-mute);", "Key is consumed and emits nothing." }
+            div { class: "field-value", style: "color:var(--mute);", "Key is consumed and emits nothing." }
         },
     }
 }
@@ -486,7 +483,7 @@ fn NamePicker(
 ) -> Element {
     if names.is_empty() {
         return rsx! {
-            div { class: "field-value", style: "color:var(--text-mute);", "{empty_msg}" }
+            div { class: "field-value", style: "color:var(--mute);", "{empty_msg}" }
         };
     }
 
@@ -552,7 +549,7 @@ fn LaunchEditor(
                 pending.set(None);
             },
         }
-        div { class: "field-value", style: "color:var(--text-mute);margin-top:7px;",
+        div { class: "field-value", style: "color:var(--mute);margin-top:7px;",
             "Space-separated: first token is the program, the rest are arguments."
         }
     }

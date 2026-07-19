@@ -85,10 +85,7 @@ pub fn Macros() -> Element {
     let macro_count = macros.len();
 
     rsx! {
-        PageHead {
-            title: "Macros",
-            sub: "Create and edit keystroke sequences that can be bound to any key.",
-        }
+        PageHead { sub: "Create and edit keystroke sequences that can be bound to any key." }
 
         div { class: "work macros",
             // LEFT — narrow macro name rail

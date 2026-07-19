@@ -78,10 +78,7 @@ pub fn Calibration() -> Element {
     });
 
     rsx! {
-        PageHead {
-            title: "Calibration",
-            sub: "Click a key to tune its analog actuation. Caps fill with live pressure as you press.",
-        }
+        PageHead { sub: "Click a key to tune its analog actuation. Caps fill with live pressure as you press." }
 
         // Contextual notice for non-live states. The keypad below ALWAYS renders
         // (so the board reads as "keys" in every state, consistent with the other
@@ -285,9 +282,15 @@ fn Stage(state: Option<AnalogState>) -> Element {
             // below) actually fires: clicking the non-focusable caps doesn't grant
             // focus to this tabindex container on WebKitGTK, so without this the
             // Shift+click multi-select path would never open the bulk editor.
-            onmounted: move |e: Event<MountedData>| {
+            // Via focus({preventScroll}) — set_focus() scrolls the tall stage into
+            // view on mount, which hides the page head + reset toolbar above it.
+            id: "cal-stage",
+            onmounted: move |_| {
                 spawn(async move {
-                    let _ = e.set_focus(true).await;
+                    let _ = document::eval(
+                        "document.getElementById('cal-stage')?.focus({preventScroll:true});",
+                    )
+                    .await;
                 });
             },
             style: "position:relative; z-index:51; outline:none;",
@@ -410,7 +413,7 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
                 span { "{count} keys · bulk actuation" }
                 span { class: "link-x", onclick: move |_| on_close.call(()), "×" }
             }
-            div { class: "field-value", style: "color:var(--text-mute);margin-bottom:12px;", "{names}" }
+            div { class: "field-value", style: "color:var(--mute);margin-bottom:12px;", "{names}" }
 
             Slider {
                 label: "Actuation point".to_string(),
@@ -439,7 +442,7 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
                 },
             }
 
-            div { class: "field-value", style: "color:var(--text-mute);margin-top:12px;",
+            div { class: "field-value", style: "color:var(--mute);margin-top:12px;",
                 "Sets actuation & release for all selected keys at once. Each key keeps its own second function."
             }
         }
@@ -684,7 +687,7 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
                             push();
                         },
                     }
-                    div { class: "field-value", style: "color:var(--text-mute);margin-top:6px;",
+                    div { class: "field-value", style: "color:var(--mute);margin-top:6px;",
                         "Fires when pressed past the second point. Must be deeper than actuation."
                     }
                 }

@@ -62,10 +62,7 @@ pub fn Profiles() -> Element {
     }));
 
     rsx! {
-        PageHead {
-            title: "Profiles",
-            sub: "Per-profile key bindings, calibration, and lighting. A profile activates automatically when its linked application comes into focus.",
-        }
+        PageHead { sub: "Per-profile key bindings, calibration, and lighting. A profile activates automatically when its linked application comes into focus." }
 
         // ── Thin toolbar: global auto-switch + offline note + New profile ─────
         div { class: "profile-toolbar",
@@ -142,7 +139,7 @@ pub fn Profiles() -> Element {
                                 // a small inline-styled dot (keypad/key_picker
                                 // inline-style precedent) keeps it self-contained.
                                 span {
-                                    style: "width:7px;height:7px;border-radius:50%;background:var(--text-mute);opacity:0.6;display:inline-block;",
+                                    style: "width:7px;height:7px;border-radius:50%;background:var(--mute);opacity:0.6;display:inline-block;",
                                 }
                             }
 

@@ -106,10 +106,7 @@ pub fn Lighting() -> Element {
     let current_name = effect_name(&effect);
 
     rsx! {
-        PageHead {
-            title: "Lighting",
-            sub: "Pick an effect, dial in your colour, and set how bright the keys glow.",
-        }
+        PageHead { sub: "Pick an effect, dial in your colour, and set how bright the keys glow." }
 
         div { class: "work",
             // Left: live keypad preview
@@ -148,7 +145,8 @@ pub fn Lighting() -> Element {
                 div { class: "card",
                     p { class: "card-title", "Brightness" }
                     Slider {
-                        label: "Brightness".to_string(),
+                        // The card title already says Brightness; no field label.
+                        label: String::new(),
                         value: brightness as f64,
                         min: 0.0,
                         max: 255.0,

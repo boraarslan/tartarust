@@ -125,7 +125,11 @@ pub fn Keypad(
     };
 
     rsx! {
-        div { class: "keypad",
+        // The deck plate: one continuous panel behind both clusters, so the
+        // keypad reads as the physical device sitting on the stage. The engraved
+        // designation line is part of the plate, not UI chrome.
+        div { class: "deck",
+            div { class: if analog_only { "keypad analog" } else { "keypad" },
             // Main block: 19 keys in rows of 5 / 5 / 5 / 4 (last row left-aligned).
             div { class: "keypad-main",
                 for (r , & len) in GRID_ROWS.iter().enumerate() {
@@ -162,6 +166,8 @@ pub fn Keypad(
                     ThumbButton { mode, layer, press: thumb_btn_press, modal: thumb_btn_modal }
                 }
             }
+            }
+            div { class: "deck-engrave", "TARTARUS PRO · USB 1532:0244" }
         }
     }
 }

@@ -71,7 +71,7 @@ pub fn run_app() {
     let config = Config::new()
         .with_window(window)
         .with_menu(None)
-        .with_background_color((10, 11, 12, 255));
+        .with_background_color((19, 17, 16, 255));
 
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
