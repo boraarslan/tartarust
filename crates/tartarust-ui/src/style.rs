@@ -1128,4 +1128,30 @@ a:focus-visible, [tabindex]:focus-visible {
 .link-add:hover { border-color: var(--rust); color: var(--ink); }
 .link-add.disabled { opacity: 0.45; cursor: default; }
 .link-add.disabled:hover { border-color: var(--line); color: var(--dim); }
+
+/* Dialog overlay (profile export/import): a centered machined card over a
+   dimmed chassis. z-index above the row menus (30) and the lifted caps (70). */
+.overlay {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(10, 9, 7, 0.62);
+  display: flex; align-items: center; justify-content: center;
+}
+.dialog {
+  width: min(480px, calc(100vw - 48px));
+  background: var(--panel-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.6);
+  padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.dialog-title {
+  font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--ink);
+}
+.dialog-sub { font-size: 12px; color: var(--dim); line-height: 1.5; }
+.dialog-error { font-size: 12px; color: var(--red); line-height: 1.5; }
+.dialog-actions {
+  display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px;
+}
 "#;

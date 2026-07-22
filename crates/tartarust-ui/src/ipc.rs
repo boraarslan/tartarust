@@ -454,6 +454,89 @@ pub fn delete_profile(store: dioxus::prelude::Signal<AppState>, name: String) {
     fire_or_resync(store, Request::DeleteProfile { name });
 }
 
+/// Fetch a profile's portable export bundle (profile + referenced macros) from
+/// the daemon. `Err` carries a display-ready message (daemon rejection or
+/// transport failure — the latter also flips the offline badge).
+pub async fn export_profile_bundle(
+    store: dioxus::prelude::Signal<AppState>,
+    name: String,
+) -> Result<tartarust_ipc::ProfileExport, String> {
+    match send(Request::ExportProfile { name }).await {
+        Ok(Response::ProfileExport(bundle)) => {
+            mark_online(store);
+            Ok(bundle)
+        }
+        // A decoded reply — even a rejection — proves the daemon is reachable;
+        // clear a stale offline flag like every other helper does.
+        Ok(Response::Error { message }) => {
+            mark_online(store);
+            Err(message)
+        }
+        Ok(other) => {
+            mark_online(store);
+            Err(format!("unexpected daemon reply: {other:?}"))
+        }
+        Err(e) => {
+            mark_offline(store, &e);
+            Err("daemon unreachable".into())
+        }
+    }
+}
+
+/// Import profile entries (from an export bundle or a whole config file) into
+/// the daemon, sequentially; stops at the first rejection. Ends with a full
+/// [`resync`] either way, so the profile list, macros, and the unsaved flag are
+/// authoritative — like every other edit, an import is session-live until the
+/// user presses Save. Returns how many profiles were imported.
+pub async fn import_profile_entries(
+    mut store: dioxus::prelude::Signal<AppState>,
+    entries: Vec<(tartarust_ipc::Profile, Vec<Macro>)>,
+    overwrite: bool,
+) -> Result<usize, String> {
+    use dioxus::prelude::WritableExt;
+    let mut imported = 0usize;
+    let mut failure = None;
+    for (profile, macros) in entries {
+        let shown = profile.name.clone();
+        match send(Request::ImportProfile {
+            profile,
+            macros,
+            rename: None,
+            overwrite,
+        })
+        .await
+        {
+            Ok(Response::Ack) => imported += 1,
+            Ok(Response::Error { message }) => {
+                failure = Some(format!("importing “{shown}”: {message}"));
+                break;
+            }
+            Ok(other) => {
+                failure = Some(format!("unexpected daemon reply: {other:?}"));
+                break;
+            }
+            Err(e) => {
+                // Break, not return: profiles already imported this loop are
+                // live in the daemon, so the unsaved flag + resync below must
+                // still run (resync itself no-ops while unreachable).
+                mark_offline(store, &e);
+                failure = Some("daemon unreachable — import aborted".into());
+                break;
+            }
+        }
+    }
+    // Resync even on failure: a config-file import can partially land before a
+    // rejection, and the list must reflect what the daemon actually holds.
+    if imported > 0 {
+        store.with_mut(|s| s.unsaved = true);
+    }
+    resync(store).await;
+    match failure {
+        Some(message) => Err(message),
+        None => Ok(imported),
+    }
+}
+
 pub fn save_macro(store: dioxus::prelude::Signal<AppState>, r#macro: Macro) {
     fire_or_resync(store, Request::SaveMacro { r#macro });
 }

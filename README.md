@@ -21,7 +21,8 @@ socket.
 - **Chroma lighting** — brightness + effects (static / breathing / spectrum /
   wave / reactive / starlight) and per-key custom frames.
 - **Profiles** — multiple software profiles with optional per-application
-  auto-switching (the Pro has no onboard profile memory).
+  auto-switching (the Pro has no onboard profile memory), plus portable
+  export/import (CLI or UI) for moving profiles between machines.
 - **Macros** — recorded key/button/delay sequences.
 - **Analog actuation** — adjustable actuation points / dual-step *(gated: the
   config protocol is undocumented; see [`docs/research/03-analog-actuation.md`](docs/research/03-analog-actuation.md))*.
@@ -113,6 +114,12 @@ tartarust profile list
 tartarust profile switch "MMO Grind"
 tartarust brightness 200
 tartarust autoswitch on
+
+# Move profiles between machines / installs (bundles include referenced macros)
+tartarust profile export "MMO Grind" -o grind.toml
+tartarust profile import grind.toml            # add --force to overwrite
+tartarust profile import ~/.config/rusty-tartarus/config.toml   # migrate ALL
+                                               # profiles from an old install
 ```
 
 See [`docs/examples/config.toml`](docs/examples/config.toml) for the config

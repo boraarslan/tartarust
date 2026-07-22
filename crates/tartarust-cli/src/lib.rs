@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+use tartarust_ipc::bundle::ImportSource;
 use tartarust_ipc::model::{Effect, LightingState, Rgb};
 use tartarust_ipc::{Request, Response};
 
@@ -87,6 +88,30 @@ enum ProfileOp {
         /// Profile name.
         name: String,
     },
+    /// Export a profile (and the macros it references) as portable TOML.
+    Export {
+        /// Profile name.
+        name: String,
+        /// Write to this file instead of stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Import profiles from an export file — or a whole config file — and save.
+    Import {
+        /// A `tartarust profile export` file, or a full config.toml (e.g.
+        /// `~/.config/rusty-tartarus/config.toml` to migrate an old install —
+        /// every profile in it is imported). `-` reads stdin.
+        file: PathBuf,
+        /// Import under a different profile name (export files only).
+        #[arg(long)]
+        rename: Option<String>,
+        /// Overwrite existing same-name profiles/macros instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Apply for this session only; skip the daemon's save-to-disk step.
+        #[arg(long)]
+        no_save: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -153,6 +178,13 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
             ProfileOp::Switch { name } => {
                 print_response(send(&socket, &Request::SwitchProfile { name }).await?)
             }
+            ProfileOp::Export { name, output } => export_profile(&socket, name, output).await?,
+            ProfileOp::Import {
+                file,
+                rename,
+                force,
+                no_save,
+            } => import_profiles(&socket, &file, rename, force, no_save).await?,
         },
         Cmd::Lighting { op } => match op {
             LightingOp::Get => {
@@ -199,6 +231,110 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
         },
         // Passthroughs handled in main().
         Cmd::Discover | Cmd::DiscoverKeys | Cmd::Run { .. } => unreachable!(),
+    }
+    Ok(())
+}
+
+/// `profile export`: fetch the bundle from the daemon and write it as TOML.
+/// With no `--output` the TOML goes to stdout (pipe-friendly, nothing else on
+/// stdout); with one, a confirmation line is printed instead.
+async fn export_profile(socket: &Path, name: String, output: Option<PathBuf>) -> Result<()> {
+    match send(socket, &Request::ExportProfile { name: name.clone() }).await? {
+        Response::ProfileExport(bundle) => {
+            let toml = tartarust_ipc::bundle::to_toml(&bundle).map_err(anyhow::Error::msg)?;
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &toml)
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    println!(
+                        "exported profile `{name}` ({} macro(s)) to {}",
+                        bundle.macros.len(),
+                        path.display()
+                    );
+                }
+                None => print!("{toml}"),
+            }
+            Ok(())
+        }
+        Response::Error { message } => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        other => bail!("unexpected daemon reply: {other:?} — daemon/CLI version mismatch?"),
+    }
+}
+
+/// `profile import`: parse the file, push the profile(s) into the daemon, and
+/// (unless `--no-save`) commit the daemon's config to disk so the import
+/// survives a restart — the point of moving profiles between installs.
+async fn import_profiles(
+    socket: &Path,
+    file: &Path,
+    rename: Option<String>,
+    force: bool,
+    no_save: bool,
+) -> Result<()> {
+    let text = if file == Path::new("-") {
+        std::io::read_to_string(std::io::stdin()).context("reading stdin")?
+    } else {
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?
+    };
+    let entries = match tartarust_ipc::bundle::parse(&text).map_err(anyhow::Error::msg)? {
+        ImportSource::Bundle(bundle) => vec![(bundle.profile, bundle.macros)],
+        ImportSource::Config(entries) => {
+            if rename.is_some() {
+                bail!("--rename only applies to single-profile export files");
+            }
+            entries
+        }
+    };
+    // Don't stop at a rejection: with a multi-profile config file, later
+    // profiles may import fine — and whatever DID land is live in the daemon,
+    // so the save step below must still run or the successes would silently
+    // evaporate on the next daemon restart.
+    let mut imported = 0usize;
+    let mut failures = Vec::new();
+    for (profile, macros) in entries {
+        let shown = rename.clone().unwrap_or_else(|| profile.name.clone());
+        let macro_count = macros.len();
+        match send(
+            socket,
+            &Request::ImportProfile {
+                profile,
+                macros,
+                rename: rename.clone(),
+                overwrite: force,
+            },
+        )
+        .await?
+        {
+            Response::Error { message } => {
+                eprintln!("error: importing `{shown}`: {message}");
+                failures.push(shown);
+            }
+            _ => {
+                println!("imported profile `{shown}` ({macro_count} macro(s))");
+                imported += 1;
+            }
+        }
+    }
+    if no_save {
+        println!("session-only (--no-save): save from the UI or re-run without --no-save to keep");
+    } else if imported > 0 {
+        if let Response::Error { message } =
+            send(socket, &Request::SaveProfile { name: None }).await?
+        {
+            bail!("import applied but saving the config failed: {message}");
+        }
+        println!("saved to the daemon's config");
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} of {} profile(s) failed to import: {}",
+            failures.len(),
+            failures.len() + imported,
+            failures.join(", ")
+        );
     }
     Ok(())
 }

@@ -6,7 +6,7 @@
 //! simple `Rgb` struct — so the contract crate compiles anywhere. The daemon
 //! converts these to `evdev`/`tartarust-protocol` types at its boundary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -255,6 +255,81 @@ impl Profile {
             Layer::Hypershift => &mut self.hypershift,
         }
     }
+}
+
+/// File-format marker for an exported profile bundle (the `format` field).
+pub const PROFILE_EXPORT_FORMAT: &str = "tartarust-profile";
+/// Current export-bundle schema version. Bump when the bundle shape changes;
+/// importers refuse bundles newer than they understand.
+pub const PROFILE_EXPORT_VERSION: u32 = 1;
+
+/// A portable profile bundle: one profile plus the macros its binds reference.
+///
+/// This is BOTH the on-disk shape of a `tartarust profile export` file (as
+/// TOML — scalars first so the envelope serializes before the tables) and the
+/// payload of the export/import IPC round-trip. Everything in it is the
+/// device-free wire model, so a bundle written on one machine imports on any
+/// other (or into a fresh install after a config-path change).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileExport {
+    /// Always [`PROFILE_EXPORT_FORMAT`]; lets an importer reject foreign TOML.
+    pub format: String,
+    /// Bundle schema version ([`PROFILE_EXPORT_VERSION`] when written).
+    pub version: u32,
+    /// The exported profile, in full.
+    pub profile: Profile,
+    /// The macros the profile's binds reference (only those; a bind referencing
+    /// a macro that did not exist at export time is carried as-is, dangling).
+    #[serde(default)]
+    pub macros: Vec<Macro>,
+}
+
+impl ProfileExport {
+    /// Wrap a profile + its macros in a current-version envelope.
+    pub fn new(profile: Profile, macros: Vec<Macro>) -> Self {
+        ProfileExport {
+            format: PROFILE_EXPORT_FORMAT.to_string(),
+            version: PROFILE_EXPORT_VERSION,
+            profile,
+            macros,
+        }
+    }
+
+    /// Check the envelope: right `format` marker, version not from the future.
+    pub fn validate(&self) -> Result<(), String> {
+        Self::check_envelope(&self.format, self.version)
+    }
+
+    /// The envelope rule behind [`ProfileExport::validate`], callable BEFORE a
+    /// full parse — a bundle from a newer build may not deserialize at all, and
+    /// the version gate must still fire from the bare `format`/`version` pair.
+    pub fn check_envelope(format: &str, version: u32) -> Result<(), String> {
+        if format != PROFILE_EXPORT_FORMAT {
+            return Err(format!(
+                "not a {PROFILE_EXPORT_FORMAT} bundle (format = \"{format}\")"
+            ));
+        }
+        if version > PROFILE_EXPORT_VERSION {
+            return Err(format!(
+                "bundle version {version} is newer than this build supports ({PROFILE_EXPORT_VERSION}) — upgrade tartarust"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The names of all macros a profile's binds reference, across both layers.
+/// Sorted (`BTreeSet`) so exports are deterministic.
+pub fn referenced_macro_names(profile: &Profile) -> BTreeSet<String> {
+    profile
+        .base
+        .values()
+        .chain(profile.hypershift.values())
+        .filter_map(|action| match action {
+            BindAction::Macro { name } => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Device identity + connection state.
