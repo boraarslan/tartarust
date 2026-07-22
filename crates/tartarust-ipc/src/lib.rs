@@ -21,8 +21,9 @@ use std::path::PathBuf;
 pub mod model;
 
 pub use model::{
-    BindAction, DeviceInfo, Effect, Layer, LightingState, Macro, MacroStep, Profile, Rgb,
-    ThumbAxisMode, WaveDirection,
+    BindAction, DeviceInfo, Effect, Layer, LightingState, Macro, MacroStep, PROFILE_EXPORT_FORMAT,
+    PROFILE_EXPORT_VERSION, Profile, ProfileExport, Rgb, ThumbAxisMode, WaveDirection,
+    referenced_macro_names,
 };
 
 /// IPC schema version. Bump on any breaking change to `Request`/`Response`.
@@ -134,6 +135,31 @@ pub enum Request {
         /// New thumb-axis mode.
         mode: ThumbAxisMode,
     },
+    /// Export one profile as a portable bundle: the profile plus the macros its
+    /// binds reference (see [`ProfileExport`]). Read-only.
+    ExportProfile {
+        /// Profile to export.
+        name: String,
+    },
+    /// Import a profile bundle (as produced by [`Request::ExportProfile`]).
+    ///
+    /// Atomic: on any rejection (name collision without `overwrite`, or a
+    /// same-name macro with different steps) nothing is changed. Bundled macros
+    /// identical to existing ones import silently; the profile's `linked_app`
+    /// is kept as-is. Like every other edit this applies live and is persisted
+    /// only on [`Request::SaveProfile`]. If the imported name is the active
+    /// profile (an in-place overwrite), its binds/lighting re-apply immediately.
+    ImportProfile {
+        /// The profile to add.
+        profile: Profile,
+        /// Macros bundled with it (normally those its binds reference).
+        macros: Vec<Macro>,
+        /// Import under this name instead of `profile.name`.
+        rename: Option<String>,
+        /// Replace an existing same-name profile / conflicting macros instead
+        /// of rejecting.
+        overwrite: bool,
+    },
 
     // ---- binds -------------------------------------------------------------
     /// Set (or clear) the action bound to one physical key in one layer.
@@ -239,6 +265,9 @@ pub enum Response {
     Profiles(ProfileList),
     /// Reply to [`Request::GetProfile`].
     Profile(Profile),
+    /// Reply to [`Request::ExportProfile`]. Safe as a newtype variant under
+    /// internal tagging — `ProfileExport` is a struct (serializes as a map).
+    ProfileExport(ProfileExport),
     /// Reply to [`Request::GetLighting`].
     Lighting(LightingState),
     /// Reply to [`Request::ListMacros`].
@@ -414,6 +443,8 @@ mod tests {
                 | Request::SetDefaultProfile { .. }
                 | Request::SaveProfile { .. }
                 | Request::SetThumbAxisMode { .. }
+                | Request::ExportProfile { .. }
+                | Request::ImportProfile { .. }
                 | Request::SetBind { .. }
                 | Request::GetLighting { .. }
                 | Request::SetLighting { .. }
@@ -455,6 +486,16 @@ mod tests {
             Request::SetThumbAxisMode {
                 profile: "fps".into(),
                 mode: ThumbAxisMode::Four,
+            },
+            Request::ExportProfile { name: "fps".into() },
+            Request::ImportProfile {
+                profile: Profile::new("fps"),
+                macros: vec![Macro {
+                    name: "m".into(),
+                    steps: vec![MacroStep::Delay { ms: 10 }],
+                }],
+                rename: Some("fps (imported)".into()),
+                overwrite: true,
             },
             Request::SetBind {
                 profile: "default".into(),
@@ -503,6 +544,7 @@ mod tests {
                 | Response::DeviceInfo(_)
                 | Response::Profiles(_)
                 | Response::Profile(_)
+                | Response::ProfileExport(_)
                 | Response::Lighting(_)
                 | Response::Macros { .. }
                 | Response::Macro(_)
@@ -535,6 +577,15 @@ mod tests {
                 active: "default".into(),
             }),
             Response::Profile(Profile::new("default")),
+            Response::ProfileExport(ProfileExport::new(
+                Profile::new("fps"),
+                vec![Macro {
+                    name: "m".into(),
+                    steps: vec![MacroStep::Press {
+                        key: "KEY_A".into(),
+                    }],
+                }],
+            )),
             Response::Lighting(LightingState::default()),
             Response::Macros {
                 names: vec!["m1".into(), "m2".into()],

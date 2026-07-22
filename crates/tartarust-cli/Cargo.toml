@@ -11,10 +11,13 @@ description = "Command-line client for the Tartarus Pro daemon (scriptable contr
 
 [dependencies]
 tartarust-ipc = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+# Profile bundles / config files are TOML (same version the daemon pins).
+toml = "0.8"
 
 [lints]
 workspace = true

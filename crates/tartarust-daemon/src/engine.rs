@@ -555,6 +555,13 @@ impl Engine {
             // `pipeline::spawn_engine`).
             Request::SaveProfile { .. } => (Response::Ack, vec![]),
             Request::SetThumbAxisMode { profile, mode } => self.set_thumb_axis_mode(profile, mode),
+            Request::ExportProfile { name } => self.export_profile(name),
+            Request::ImportProfile {
+                profile,
+                macros,
+                rename,
+                overwrite,
+            } => self.import_profile(profile, macros, rename, overwrite),
             Request::SetBind {
                 profile,
                 layer,
@@ -737,6 +744,76 @@ impl Engine {
         copy.name = to.clone();
         copy.linked_app = None;
         self.profiles.insert(to, copy);
+        (Response::Ack, vec![])
+    }
+
+    /// Build a portable [`ProfileExport`] bundle: the profile plus the macros
+    /// its binds reference (only those that exist — a dangling macro bind is
+    /// exported as-is, matching how it behaves here).
+    fn export_profile(&self, name: String) -> (Response, Vec<DeviceCmd>) {
+        let Some(profile) = self.profiles.get(&name) else {
+            return (err(format!("no such profile: {name}")), vec![]);
+        };
+        let macros = tartarust_ipc::referenced_macro_names(profile)
+            .iter()
+            .filter_map(|n| self.macros.get(n).cloned())
+            .collect();
+        (
+            Response::ProfileExport(tartarust_ipc::ProfileExport::new(profile.clone(), macros)),
+            vec![],
+        )
+    }
+
+    /// Import a profile bundle. Atomic: every rejection happens before any
+    /// state changes. Bundled macros identical to existing ones are a no-op;
+    /// a same-name macro with different steps is a conflict unless `overwrite`.
+    /// Overwriting the ACTIVE profile re-activates it so the new binds/lighting
+    /// take effect live (same path as a profile switch).
+    fn import_profile(
+        &mut self,
+        mut profile: Profile,
+        macros: Vec<Macro>,
+        rename: Option<String>,
+        overwrite: bool,
+    ) -> (Response, Vec<DeviceCmd>) {
+        let target = rename.unwrap_or_else(|| profile.name.clone());
+        if target.is_empty() {
+            return (err("imported profile has an empty name".into()), vec![]);
+        }
+        if !overwrite {
+            if self.profiles.contains_key(&target) {
+                return (
+                    err(format!(
+                        "profile already exists: {target} (re-import with overwrite, or rename)"
+                    )),
+                    vec![],
+                );
+            }
+            if let Some(conflict) = macros
+                .iter()
+                .find(|m| self.macros.get(&m.name).is_some_and(|have| *have != **m))
+            {
+                return (
+                    err(format!(
+                        "macro already exists with different steps: {} (re-import with overwrite)",
+                        conflict.name
+                    )),
+                    vec![],
+                );
+            }
+        }
+        for m in macros {
+            self.macros.insert(m.name.clone(), m);
+        }
+        profile.name = target.clone();
+        self.profiles.insert(target.clone(), profile);
+        if self.active_profile == target {
+            // In-place overwrite of the ACTIVE profile. Binds resolve fresh on
+            // every key event, but lighting is push-on-change — re-apply it.
+            // (Not `activate_profile`: that no-ops when the name is already
+            // active, which is exactly this case.)
+            return (Response::Ack, vec![self.active_lighting_cmd()]);
+        }
         (Response::Ack, vec![])
     }
 
@@ -2130,5 +2207,260 @@ mod tests {
             .0,
             Response::Error { .. }
         ));
+    }
+
+    #[test]
+    fn export_bundles_the_profile_with_only_its_referenced_macros() {
+        let mut config = cfg(
+            vec![(
+                "KEY_A",
+                BindAction::Macro {
+                    name: "used".into(),
+                },
+            )],
+            vec![(
+                "KEY_B",
+                BindAction::Macro {
+                    name: "ghost".into(),
+                },
+            )],
+        );
+        config.macros.insert(
+            "used".into(),
+            Macro {
+                name: "used".into(),
+                steps: vec![MacroStep::Delay { ms: 5 }],
+            },
+        );
+        config.macros.insert(
+            "unused".into(),
+            Macro {
+                name: "unused".into(),
+                steps: vec![],
+            },
+        );
+        let mut e = Engine::new(config);
+
+        let (Response::ProfileExport(bundle), cmds) = e.apply(
+            Request::ExportProfile {
+                name: "default".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected a profile bundle");
+        };
+        assert!(cmds.is_empty());
+        assert_eq!(bundle.format, tartarust_ipc::PROFILE_EXPORT_FORMAT);
+        assert_eq!(bundle.version, tartarust_ipc::PROFILE_EXPORT_VERSION);
+        assert_eq!(bundle.profile.name, "default");
+        // `unused` is not referenced; the hypershift bind's `ghost` does not
+        // exist (the bind itself is carried, dangling, inside the profile).
+        assert_eq!(
+            bundle
+                .macros
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["used"]
+        );
+
+        assert!(matches!(
+            e.apply(
+                Request::ExportProfile {
+                    name: "ghost".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+    }
+
+    #[test]
+    fn import_roundtrips_an_exported_bundle_into_another_engine() {
+        let mut config = cfg(
+            vec![(
+                "KEY_A",
+                BindAction::Macro {
+                    name: "burst".into(),
+                },
+            )],
+            vec![],
+        );
+        config.macros.insert(
+            "burst".into(),
+            Macro {
+                name: "burst".into(),
+                steps: vec![MacroStep::Press {
+                    key: "KEY_1".into(),
+                }],
+            },
+        );
+        let mut src = Engine::new(config);
+        let (Response::ProfileExport(bundle), _) = src.apply(
+            Request::ExportProfile {
+                name: "default".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected a profile bundle");
+        };
+
+        // A fresh engine has its own "default": import under a new name.
+        let mut dst = Engine::new(cfg(vec![], vec![]));
+        assert!(!dst.is_dirty());
+        let (resp, cmds) = dst.apply(
+            Request::ImportProfile {
+                profile: bundle.profile.clone(),
+                macros: bundle.macros.clone(),
+                rename: Some("imported".into()),
+                overwrite: false,
+            },
+            "v",
+        );
+        assert_eq!(resp, Response::Ack);
+        assert!(
+            cmds.is_empty(),
+            "importing an inactive profile is device-quiet"
+        );
+        assert!(dst.is_dirty(), "an import is an unsaved edit");
+
+        let (Response::Profile(got), _) = dst.apply(
+            Request::GetProfile {
+                name: "imported".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the imported profile");
+        };
+        let mut want = bundle.profile.clone();
+        want.name = "imported".into();
+        assert_eq!(got, want);
+        let (Response::Macro(m), _) = dst.apply(
+            Request::GetMacro {
+                name: "burst".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the imported macro");
+        };
+        assert_eq!(m, bundle.macros[0]);
+    }
+
+    #[test]
+    fn import_rejects_collisions_atomically() {
+        let mut config = cfg(vec![], vec![]);
+        config.macros.insert(
+            "m".into(),
+            Macro {
+                name: "m".into(),
+                steps: vec![MacroStep::Delay { ms: 1 }],
+            },
+        );
+        let mut e = Engine::new(config);
+
+        // Existing profile name without overwrite.
+        assert!(matches!(
+            e.apply(
+                Request::ImportProfile {
+                    profile: Profile::new("default"),
+                    macros: vec![],
+                    rename: None,
+                    overwrite: false,
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+
+        // A same-name macro with DIFFERENT steps is a conflict — and the
+        // rejection must leave nothing behind.
+        let (resp, _) = e.apply(
+            Request::ImportProfile {
+                profile: Profile::new("fresh"),
+                macros: vec![Macro {
+                    name: "m".into(),
+                    steps: vec![MacroStep::Delay { ms: 99 }],
+                }],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        assert!(matches!(resp, Response::Error { .. }));
+        assert!(
+            matches!(
+                e.apply(
+                    Request::GetProfile {
+                        name: "fresh".into()
+                    },
+                    "v"
+                )
+                .0,
+                Response::Error { .. }
+            ),
+            "rejected import must not insert the profile"
+        );
+        let (Response::Macro(m), _) = e.apply(Request::GetMacro { name: "m".into() }, "v") else {
+            panic!("expected the original macro");
+        };
+        assert_eq!(m.steps, vec![MacroStep::Delay { ms: 1 }]);
+        assert!(!e.is_dirty(), "a rejected import must not dirty the config");
+
+        // An IDENTICAL bundled macro is not a conflict.
+        let (resp, _) = e.apply(
+            Request::ImportProfile {
+                profile: Profile::new("fresh"),
+                macros: vec![Macro {
+                    name: "m".into(),
+                    steps: vec![MacroStep::Delay { ms: 1 }],
+                }],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        assert_eq!(resp, Response::Ack);
+    }
+
+    #[test]
+    fn import_overwrite_replaces_and_relights_the_active_profile() {
+        let mut e = Engine::new(cfg(vec![("KEY_A", BindAction::Disable)], vec![]));
+        let mut incoming = Profile::new("default");
+        incoming
+            .base
+            .insert("KEY_A".into(), key_action(&["KEY_F5"]));
+        incoming.lighting = LightingState {
+            effect: Effect::Static {
+                color: Rgb::new(1, 2, 3),
+            },
+            brightness: 9,
+        };
+
+        let (resp, cmds) = e.apply(
+            Request::ImportProfile {
+                profile: incoming,
+                macros: vec![],
+                rename: None,
+                overwrite: true,
+            },
+            "v",
+        );
+        assert_eq!(resp, Response::Ack);
+        assert_eq!(
+            cmds,
+            vec![DeviceCmd::ApplyLighting(LightingState {
+                effect: Effect::Static {
+                    color: Rgb::new(1, 2, 3),
+                },
+                brightness: 9,
+            })],
+            "overwriting the ACTIVE profile must re-apply its lighting"
+        );
+
+        // The overwrite is live: the imported bind resolves on the next press.
+        let down = e.handle_key(KeyCode::KEY_A, 1);
+        assert_eq!(keys(&down), vec![(KeyCode::KEY_F5.0, 1)]);
     }
 }

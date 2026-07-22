@@ -113,6 +113,12 @@ tartarust profile list
 tartarust profile switch "MMO Grind"
 tartarust brightness 200
 tartarust autoswitch on
+
+# Move profiles between machines / installs (bundles include referenced macros)
+tartarust profile export "MMO Grind" -o grind.toml
+tartarust profile import grind.toml            # add --force to overwrite
+tartarust profile import ~/.config/rusty-tartarus/config.toml   # migrate ALL
+                                               # profiles from an old install
 ```
 
 See [`docs/examples/config.toml`](docs/examples/config.toml) for the config
