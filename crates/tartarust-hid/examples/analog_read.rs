@@ -48,7 +48,7 @@ extern "C" fn on_sigint(_sig: i32) {
 /// Install the SIGINT handler. Localized `unsafe` for the `sigaction` call.
 #[allow(unsafe_code)]
 fn install_sigint_handler() -> Result<()> {
-    use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
     let action = SigAction::new(
         SigHandler::Handler(on_sigint),
         SaFlags::empty(), // no SA_RESTART: poll() returns EINTR so the loop notices the flag
@@ -99,9 +99,7 @@ fn main() -> Result<()> {
         Err(e) => eprintln!("note: could not read back device mode ({e})"),
     }
 
-    println!(
-        "\n>>> Polling interface 1 for analog frames for {CAPTURE_SECS}s. <<<"
-    );
+    println!("\n>>> Polling interface 1 for analog frames for {CAPTURE_SECS}s. <<<");
     println!(">>> Press keys on the KEYPAD (not this terminal) to see pressure values. <<<\n");
 
     let mut stats = vec![KeyStats::default(); ANALOG_KEY_COUNT];
@@ -149,7 +147,10 @@ fn report(frames: u64, stats: &[KeyStats]) {
     println!("Per-key-index activity (byte index : frames active : peak pressure):");
     for (i, s) in stats.iter().enumerate() {
         if s.active_frames > 0 {
-            println!("  byte[{i:2}] : {:4} frames : peak 0x{:02X}", s.active_frames, s.peak);
+            println!(
+                "  byte[{i:2}] : {:4} frames : peak 0x{:02X}",
+                s.active_frames, s.peak
+            );
         }
     }
     println!("\nIntermediate (non-0x00/0xFF) peaks confirm analog pressure tracking.");

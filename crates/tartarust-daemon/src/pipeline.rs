@@ -140,7 +140,8 @@ pub fn spawn_engine(
                         // rather than the stale startup cache.
                         if matches!(
                             request,
-                            tartarust_ipc::Request::GetDeviceInfo | tartarust_ipc::Request::GetStatus
+                            tartarust_ipc::Request::GetDeviceInfo
+                                | tartarust_ipc::Request::GetStatus
                         ) {
                             engine.set_device_info(device.query_info());
                         }

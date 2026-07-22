@@ -506,8 +506,7 @@ mod tests {
         );
         assert_eq!(
             icon_path,
-            tmp.path()
-                .join("icons/hicolor/scalable/apps/tartarust.svg")
+            tmp.path().join("icons/hicolor/scalable/apps/tartarust.svg")
         );
         let body = fs::read_to_string(&entry_path).unwrap();
         assert!(body.starts_with("[Desktop Entry]\n"));

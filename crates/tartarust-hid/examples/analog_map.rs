@@ -41,7 +41,7 @@ extern "C" fn on_sigint(_sig: i32) {
 /// Install the SIGINT handler (flag-only; never exits, so `Drop` still runs).
 #[allow(unsafe_code)]
 fn install_sigint_handler() -> Result<()> {
-    use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+    use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
     let action = SigAction::new(
         SigHandler::Handler(on_sigint),
         SaFlags::empty(),

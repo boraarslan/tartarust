@@ -14,7 +14,7 @@ pub mod discover; // locate the Tartarus Pro control hidraw node via sysfs
 pub mod error; // HidError
 pub mod transport; // open hidraw node, send/recv feature report, retry-on-busy
 
-pub use analog::{restore_normal_best_effort, AnalogReader, DriverModeGuard};
+pub use analog::{AnalogReader, DriverModeGuard, restore_normal_best_effort};
 pub use discover::{discover_control_node, discover_node_for_interface};
 pub use error::HidError;
 pub use transport::Transport;

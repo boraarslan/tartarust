@@ -26,7 +26,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tartarust_protocol::{RazerReport, REPORT_SIZE};
+use tartarust_protocol::{REPORT_SIZE, RazerReport};
 
 use crate::discover::discover_control_node;
 use crate::error::HidError;
@@ -245,7 +245,6 @@ fn check_get_feature_len(count: nix::libc::c_int) -> Result<(), HidError> {
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

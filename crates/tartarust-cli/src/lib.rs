@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -227,12 +227,11 @@ fn build_lighting(effect: &str, color: Option<&str>, brightness: u8) -> Result<L
             speed: 2,
             colors: parsed_color.map(|c| vec![c]).unwrap_or_default(),
         },
-        other => bail!("unknown effect `{other}` (try: none, static, spectrum, wave, reactive, breathing, starlight)"),
+        other => bail!(
+            "unknown effect `{other}` (try: none, static, spectrum, wave, reactive, breathing, starlight)"
+        ),
     };
-    Ok(LightingState {
-        effect,
-        brightness,
-    })
+    Ok(LightingState { effect, brightness })
 }
 
 /// Parse `RRGGBB` (optionally `#RRGGBB`) into an [`Rgb`].

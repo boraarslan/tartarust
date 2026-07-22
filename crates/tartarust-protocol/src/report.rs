@@ -19,7 +19,7 @@
 
 use deku::prelude::*;
 
-use crate::{error::ProtocolError, REPORT_SIZE};
+use crate::{REPORT_SIZE, error::ProtocolError};
 
 /// Status byte values (`razercommon.h` `RAZER_CMD_*` macros).
 ///

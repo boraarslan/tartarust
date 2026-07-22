@@ -93,7 +93,11 @@ mod tests {
         for id in [0x01u8, 0x04, 0x05] {
             let mut raw = [0u8; ANALOG_FRAME_LEN];
             raw[0] = id;
-            assert_eq!(AnalogFrame::decode(&raw), None, "id 0x{id:02x} must not decode");
+            assert_eq!(
+                AnalogFrame::decode(&raw),
+                None,
+                "id 0x{id:02x} must not decode"
+            );
         }
     }
 

@@ -10,7 +10,7 @@
 //! in the transport.
 
 use anyhow::Result;
-use tartarust_hid::{discover_control_node, HidError, Transport};
+use tartarust_hid::{HidError, Transport, discover_control_node};
 use tartarust_protocol::device;
 
 fn main() -> Result<()> {

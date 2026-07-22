@@ -90,7 +90,13 @@ mod tests {
 
     #[test]
     fn to_report_sets_header_and_crc() {
-        let cmd = Command::new(TransactionId::Lighting, 0x0F, 0x04, 0x03, &[0x01, 0x00, 0x80]);
+        let cmd = Command::new(
+            TransactionId::Lighting,
+            0x0F,
+            0x04,
+            0x03,
+            &[0x01, 0x00, 0x80],
+        );
         let r = cmd.to_report();
         assert_eq!(r.transaction_id, 0x1F);
         assert_eq!(r.command_class, 0x0F);

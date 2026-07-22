@@ -27,10 +27,10 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use nix::poll::{PollFd, PollFlags, PollTimeout};
-use tartarust_protocol::device::{self, DEVICE_MODE_DRIVER, DEVICE_MODE_NORMAL};
 use tartarust_protocol::AnalogFrame;
+use tartarust_protocol::device::{self, DEVICE_MODE_DRIVER, DEVICE_MODE_NORMAL};
 
-use crate::discover::{discover_control_node, discover_node_for_interface, INPUT_INTERFACE};
+use crate::discover::{INPUT_INTERFACE, discover_control_node, discover_node_for_interface};
 use crate::error::HidError;
 use crate::transport::Transport;
 
@@ -93,7 +93,10 @@ impl DriverModeGuard {
     /// Send `set_device_mode(DRIVER)` to enable analog reporting. After this the
     /// keypad stops sending normal keystrokes until NORMAL is restored (on drop).
     pub fn enter_driver(&self) -> Result<(), HidError> {
-        command_with_epipe_retry(&self.transport, &device::set_device_mode(DEVICE_MODE_DRIVER))?;
+        command_with_epipe_retry(
+            &self.transport,
+            &device::set_device_mode(DEVICE_MODE_DRIVER),
+        )?;
         tracing::debug!("device entered DRIVER mode (analog enabled)");
         Ok(())
     }
@@ -111,8 +114,10 @@ impl Drop for DriverModeGuard {
         // Restore NORMAL on every exit path. Never panic in Drop. The Pro may
         // re-enumerate on NORMAL, killing this fd mid-send; treat that as
         // recoverable by re-discovering and reopening the control node.
-        match command_with_epipe_retry(&self.transport, &device::set_device_mode(DEVICE_MODE_NORMAL))
-        {
+        match command_with_epipe_retry(
+            &self.transport,
+            &device::set_device_mode(DEVICE_MODE_NORMAL),
+        ) {
             Ok(_) => match self.read_mode() {
                 Ok(DEVICE_MODE_NORMAL) => {
                     tracing::info!("restored device mode: NORMAL (keypad typing OK)");
@@ -122,7 +127,9 @@ impl Drop for DriverModeGuard {
                     mode = other,
                     "after NORMAL send, device reports a non-NORMAL mode"
                 ),
-                Err(e) => tracing::warn!(error = %e, "NORMAL sent but mode read-back failed; re-checking"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "NORMAL sent but mode read-back failed; re-checking")
+                }
             },
             Err(e) => tracing::warn!(
                 error = %e,
@@ -308,13 +315,15 @@ impl AnalogReader {
         let n = match self.input.read(&mut self.buf) {
             Ok(0) => return Ok(None),
             Ok(n) => n,
-            Err(e) if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) => return Ok(None),
+            Err(e) if e.raw_os_error() == Some(nix::errno::Errno::EAGAIN as i32) => {
+                return Ok(None);
+            }
             Err(e) if e.raw_os_error() == Some(nix::errno::Errno::EINTR as i32) => return Ok(None),
             Err(source) => {
                 return Err(HidError::Io {
                     path: self.input_node.clone(),
                     source,
-                })
+                });
             }
         };
 

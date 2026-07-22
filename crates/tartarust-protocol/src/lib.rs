@@ -26,6 +26,6 @@ pub mod lighting; // Chroma effects + custom matrix frames
 pub mod report; // 90-byte `RazerReport` (deku) + XOR checksum
 // pub mod profile; // onboard memory / profile slots — not exposed for the Pro (M4)
 
-pub use analog::{AnalogFrame, ANALOG_FRAME_LEN, ANALOG_KEY_COUNT, ANALOG_REPORT_ID};
+pub use analog::{ANALOG_FRAME_LEN, ANALOG_KEY_COUNT, ANALOG_REPORT_ID, AnalogFrame};
 pub use error::ProtocolError;
 pub use report::{RazerReport, Status};

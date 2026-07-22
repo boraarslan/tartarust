@@ -19,20 +19,20 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use tartarust_hid::{discover_control_node, HidError, Transport};
+use tartarust_hid::{HidError, Transport, discover_control_node};
 use tartarust_protocol::lighting::{self, Rgb, WaveDirection};
-use tartarust_protocol::{device, RazerReport};
+use tartarust_protocol::{RazerReport, device};
 
 /// How long to hold each effect so a human can glance at the keypad.
 const DWELL: Duration = Duration::from_millis(900);
 
 /// Outcome of one effect attempt.
 enum Outcome {
-    Ok(u8),         // accepted; carries the response status byte
-    Stall,          // HIDIOCSFEATURE EPIPE (USB STALL), even after one retry
-    Status(u8),     // device returned a non-success status after retries
-    Mismatch,       // response header never echoed the request
-    Other(String),  // any other transport error
+    Ok(u8),        // accepted; carries the response status byte
+    Stall,         // HIDIOCSFEATURE EPIPE (USB STALL), even after one retry
+    Status(u8),    // device returned a non-success status after retries
+    Mismatch,      // response header never echoed the request
+    Other(String), // any other transport error
 }
 
 impl Outcome {
@@ -73,8 +73,7 @@ fn send_one(t: &Transport, report: &RazerReport) -> Outcome {
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
 
@@ -93,12 +92,24 @@ fn main() -> Result<()> {
         ("spectrum", lighting::effect_spectrum()),
         ("wave(right)", lighting::effect_wave(WaveDirection::Right)),
         ("reactive(2,green)", lighting::effect_reactive(2, green)),
-        ("breathing_single(blue)", lighting::effect_breathing_single(blue)),
-        ("breathing_dual(red,blue)", lighting::effect_breathing_dual(red, blue)),
+        (
+            "breathing_single(blue)",
+            lighting::effect_breathing_single(blue),
+        ),
+        (
+            "breathing_dual(red,blue)",
+            lighting::effect_breathing_dual(red, blue),
+        ),
         ("breathing_random", lighting::effect_breathing_random()),
         ("starlight_random(2)", lighting::effect_starlight_random(2)),
-        ("starlight_single(2,green)", lighting::effect_starlight_single(2, green)),
-        ("starlight_dual(2,red,blue)", lighting::effect_starlight_dual(2, red, blue)),
+        (
+            "starlight_single(2,green)",
+            lighting::effect_starlight_single(2, green),
+        ),
+        (
+            "starlight_dual(2,red,blue)",
+            lighting::effect_starlight_dual(2, red, blue),
+        ),
     ];
 
     let mut results: Vec<(String, Outcome)> = Vec::new();
@@ -147,7 +158,11 @@ fn main() -> Result<()> {
         };
         let target = if cur == 128 { 200 } else { 128 };
         let out = send_one(&t, &device::set_brightness(target));
-        println!("  {:<28} -> {}", format!("set_brightness({target})"), out.label());
+        println!(
+            "  {:<28} -> {}",
+            format!("set_brightness({target})"),
+            out.label()
+        );
         results.push((format!("set_brightness({target})"), out));
     }
 

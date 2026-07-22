@@ -331,7 +331,10 @@ mod tests {
         let r = effect_reactive(0xFF, Rgb::new(1, 2, 3));
         assert_eq!(r.data_size, 0x09);
         // args[4]=speed clamped to 4, args[5]=1, args[6..9]=RGB
-        assert_eq!(&r.arguments[..9], &[0x01, 0x05, 0x05, 0x00, 0x04, 0x01, 1, 2, 3]);
+        assert_eq!(
+            &r.arguments[..9],
+            &[0x01, 0x05, 0x05, 0x00, 0x04, 0x01, 1, 2, 3]
+        );
     }
 
     #[test]
@@ -339,7 +342,10 @@ mod tests {
         let single = effect_breathing_single(Rgb::new(9, 8, 7));
         assert_eq!(single.transaction_id, 0x3F, "breathing single tid");
         assert_eq!(single.data_size, 0x09);
-        assert_eq!(&single.arguments[..9], &[0x01, 0x05, 0x02, 0x01, 0x00, 0x01, 9, 8, 7]);
+        assert_eq!(
+            &single.arguments[..9],
+            &[0x01, 0x05, 0x02, 0x01, 0x00, 0x01, 9, 8, 7]
+        );
 
         let dual = effect_breathing_dual(Rgb::new(1, 2, 3), Rgb::new(4, 5, 6));
         assert_eq!(dual.transaction_id, 0x3F, "breathing dual tid");
@@ -392,7 +398,9 @@ mod tests {
         // args[2]=row, args[3]=start, args[4]=stop, then RGB triples from args[5].
         assert_eq!(
             &r.arguments[..11],
-            &[0x00, 0x00, 0x00, 0x03, 0x04, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00]
+            &[
+                0x00, 0x00, 0x00, 0x03, 0x04, 0xFF, 0x00, 0x00, 0x00, 0xFF, 0x00
+            ]
         );
         assert!(r.verify_crc());
     }

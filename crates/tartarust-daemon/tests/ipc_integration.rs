@@ -115,8 +115,10 @@ fn ipc_server_rejects_oversized_request_line() {
         .build()
         .unwrap();
 
-    let socket =
-        std::env::temp_dir().join(format!("tartarust-ipc-oversize-{}.sock", std::process::id()));
+    let socket = std::env::temp_dir().join(format!(
+        "tartarust-ipc-oversize-{}.sock",
+        std::process::id()
+    ));
     let _ = std::fs::remove_file(&socket);
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
