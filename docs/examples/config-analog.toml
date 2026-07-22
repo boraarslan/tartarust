@@ -1,10 +1,10 @@
-# rusty-tartarus — ANALOG test config (generated 2026-06-22 from the user's
+# tartarust — ANALOG test config (generated 2026-06-22 from the user's
 # analog_map + discover-keys runs on this unit). Runs the keypad in ANALOG mode:
 # the daemon enters driver mode, reads per-key pressure, and fires each key at
 # its actuation point — so the 20 grid keys become analog.
 #
-#   cp docs/examples/config-analog.toml ~/.config/rusty-tartarus/config.toml
-#   cargo run --release --bin tartarus-daemon -- run  # Ctrl-C restores normal mode
+#   cp docs/examples/config-analog.toml ~/.config/tartarust/config.toml
+#   cargo run --release --bin tartarust-daemon -- run  # Ctrl-C restores normal mode
 #
 # What to try (focus a text editor first):
 #   * Press grid keys with a LIGHT touch -> nothing; press past ~halfway -> they

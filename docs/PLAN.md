@@ -1,4 +1,4 @@
-# rusty-tartarus — master plan
+# tartarust — master plan
 
 A from-scratch Linux driver + control app for the **Razer Tartarus Pro** keypad
 (`USB 1532:0244`), written in Rust, with a Dioxus desktop UI styled after Razer
@@ -33,7 +33,7 @@ Synapse (original design, feature-parity — not a 1:1 clone).
   - iface 1 → `hidraw9` (vendor/control, proto 01) — *candidate control channel,
     confirm against OpenRazer source for 0x0244*
   - iface 2 → `hidraw11` (mouse/thumbpad, proto 02)
-- hidraw nodes are `root`-owned; user `aimless` is in `plugdev` → ship a udev rule
+- hidraw nodes are `root`-owned; the login user is in `plugdev` → ship a udev rule
   (`docs/research/06-remap-and-udev.md`) granting `plugdev`/`uaccess` to the
   control hidraw node, the device's `/dev/input/event*` nodes, and `/dev/uinput`.
 
@@ -41,21 +41,21 @@ Synapse (original design, feature-parity — not a 1:1 clone).
 
 ```
 crates/
-  tartarus-protocol  # deku 90-byte report + typed command set (no I/O)
-  tartarus-hid       # hidraw transport: SET/GET feature reports + retry
-  tartarus-ipc       # FROZEN client<->daemon schema (serde/JSON) — the seam
-  tartarus-daemon    # owns device; evdev->uinput remap; IPC server
-  tartarus-cli       # scriptable client + diagnostics
-  tartarus-ui        # Dioxus desktop (thin IPC client)
+  tartarust-protocol  # deku 90-byte report + typed command set (no I/O)
+  tartarust-hid       # hidraw transport: SET/GET feature reports + retry
+  tartarust-ipc       # FROZEN client<->daemon schema (serde/JSON) — the seam
+  tartarust-daemon    # owns device; evdev->uinput remap; IPC server
+  tartarust-cli       # scriptable client + diagnostics
+  tartarust-ui        # Dioxus desktop (thin IPC client)
 ```
 
 ## Milestones & concurrency
 
-`tartarus-ipc` is the contract that unlocks parallelism: once it is frozen,
+`tartarust-ipc` is the contract that unlocks parallelism: once it is frozen,
 daemon, UI, and CLI teams build against it independently.
 
 - **M0 — Skeleton & contracts** *(in progress)*
-  Workspace compiles; `tartarus-ipc` schema scaffolded; deku `RazerReport` type
+  Workspace compiles; `tartarust-ipc` schema scaffolded; deku `RazerReport` type
   + XOR checksum landed; headless-cage render chain proven with a hello-world.
   *Gate for everything below.*
 
@@ -66,7 +66,7 @@ daemon, UI, and CLI teams build against it independently.
   Needs: a device-keymap discovery pass (what each physical key emits by default).
 
 - **M2 — Device control / lighting** *(parallel with M1)*
-  `tartarus-hid` transport; first **safe read** (firmware/serial) to validate
+  `tartarust-hid` transport; first **safe read** (firmware/serial) to validate
   report+CRC+transaction_id+interface; brightness; Chroma effects (static/
   breathing/spectrum/wave/reactive/starlight) + custom per-key matrix frame.
 
@@ -79,7 +79,7 @@ daemon, UI, and CLI teams build against it independently.
   Multiple profiles, focused-application auto-switch, onboard-memory slots.
 
 - **M5 — Analog actuation** *(gated)*
-  If documented: actuation-point + dual-step config over `tartarus-hid` + UI.
+  If documented: actuation-point + dual-step config over `tartarust-hid` + UI.
   If not: Synapse USB-capture sub-project (Windows VM + passthrough + usbmon),
   then implement.
 

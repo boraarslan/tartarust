@@ -3,7 +3,7 @@
 The design brief in one line: **the faceplate of a precision test instrument
 for a device you reverse-engineered**, not a gaming-software skin.
 
-rusty-tartarus exists because one person put a Tartarus Pro on the bench,
+tartarust exists because one person put a Tartarus Pro on the bench,
 captured its USB traffic, and wrote the driver Razer wouldn't. The UI should
 look like the tool that story deserves: U.S. Graphics / IBM industrial
 documentation, Elektron-grade restraint, annunciator lights instead of glow.
@@ -28,7 +28,7 @@ colored for decoration.
 | `--amber`    | `#D9A44A`             | **drift** — unsaved session, custom actuation markers |
 | `--red`      | `#D0574C`             | destructive, macro record |
 
-Rust-orange is the brand: the project is *rusty*-tartarus, written in Rust.
+Rust-orange is the brand: the project is tarta*rust*, written in Rust.
 Green is never "selected" again — v4 overloaded it (selected AND connected AND
 pressure); v5 splits those meanings across rust/live/amber.
 
@@ -48,7 +48,7 @@ Sidebar deleted. Vertical stack, edge-to-edge hairlines:
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ RUSTY·TARTARUS   TYPE RT-1 │ ● LINK 1532:0244 │ PROFILE ▾ SAVE│  masthead 54px
+│ TARTARUST   TYPE RT-1 │ ● LINK 1532:0244 │ PROFILE ▾ SAVE│  masthead 54px
 ├──────────────────────────────────────────────────────────────┤
 │ CUSTOMIZE   LIGHTING   CALIBRATION   MACROS   PROFILES       │  tab rail 38px
 ├──────────────────────────────────────────────────────────────┤
@@ -87,7 +87,7 @@ The keypad stage is the one place boldness is spent:
 - Focus: 2px rust outline, 2px offset, on every interactive element.
 - Copy: labels engrave (uppercase mono), prose speaks (sentence-case Plex,
   plain verbs, no apologies). Offline is a state readout ("NO LINK — start
-  tartarus-daemon"), not a mood.
+  tartarust-daemon"), not a mood.
 
 ## Migration rule
 

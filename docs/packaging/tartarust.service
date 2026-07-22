@@ -1,0 +1,34 @@
+# tartarust daemon — systemd *user* service.
+#
+# Install:
+#   install -Dm644 docs/packaging/tartarust.service \
+#       ~/.config/systemd/user/tartarust.service
+#   # adjust ExecStart to wherever tartarust-daemon is installed, then:
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tartarust.service
+#
+# Runs as a *user* service inside the graphical session so it inherits
+# WAYLAND_DISPLAY / HYPRLAND_INSTANCE_SIGNATURE / DISPLAY — needed for
+# per-application auto-switch focus detection. Requires device access via the
+# udev rule (docs/packaging/99-tartarust.rules) or a logind uaccess ACL.
+
+[Unit]
+Description=tartarust — Razer Tartarus Pro driver daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Adjust to your install location (`cargo install --path .` from the repo root
+# puts all three binaries — `tartarust-daemon`, `tartarust`, `tartarust-ui` — in
+# ~/.cargo/bin; add `--force` once if upgrading from the old per-crate
+# `cargo install --path crates/...` instructions, which registered the same
+# binary names under different package names).
+ExecStart=%h/.cargo/bin/tartarust-daemon run
+Restart=on-failure
+RestartSec=2
+# The daemon grabs input devices and writes /dev/uinput; no extra privileges are
+# needed beyond the udev-granted device access.
+
+[Install]
+WantedBy=graphical-session.target

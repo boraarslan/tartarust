@@ -6,7 +6,7 @@
 # It NEVER touches the user's physical monitors or live Wayland session — the
 # headless backend has no DRM/output path to real displays.
 #
-# This is the ONLY sanctioned way to run the rusty-tartarus UI during dev.
+# This is the ONLY sanctioned way to run the tartarust UI during dev.
 # Do NOT run `dx serve` / the UI binary bare — that inherits the real Wayland
 # session and pops a window on the user's screen.
 #
@@ -53,12 +53,12 @@ fi
 export XDG_RUNTIME_DIR="$RUNTIME_DIR"
 export XDG_SESSION_TYPE=wayland
 
-# --- rusty-tartarus UI: keep the harness inert --------------------------------
+# --- tartarust UI: keep the harness inert --------------------------------
 # The harness runs the UI with NO daemon on purpose; without this gate the UI
 # would autostart one, which EVIOCGRABs the real keypad while the user types.
 # Desktop-entry/icon install from a throwaway screenshot run is also unwanted.
-export TARTARUS_UI_NO_AUTOSTART=1
-export TARTARUS_UI_NO_DESKTOP_INSTALL=1
+export TARTARUST_UI_NO_AUTOSTART=1
+export TARTARUST_UI_NO_DESKTOP_INSTALL=1
 
 # --- GTK / webkit2gtk: force Wayland + software compositing ------------------
 export GDK_BACKEND=wayland

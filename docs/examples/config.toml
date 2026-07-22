@@ -1,15 +1,15 @@
-# Example rusty-tartarus config.
+# Example tartarust config.
 #
-# Install to: $XDG_CONFIG_HOME/rusty-tartarus/config.toml
-#         or: ~/.config/rusty-tartarus/config.toml
+# Install to: $XDG_CONFIG_HOME/tartarust/config.toml
+#         or: ~/.config/tartarust/config.toml
 #
 # This is the daemon's persisted state: profiles (each with base + Hypershift
 # binds and its own lighting), plus named macros. The daemon rewrites this file
-# when you change settings over IPC (e.g. from the UI or `tartarus` CLI), so
+# when you change settings over IPC (e.g. from the UI or `tartarust` CLI), so
 # comments you add by hand are lost on the next write — stop the daemon before
 # editing by hand if you want to keep them.
 #
-# Key names are evdev names. Run `tartarus discover-keys`, press each physical
+# Key names are evdev names. Run `tartarust discover-keys`, press each physical
 # key on the keypad, and paste the printed KEY_* / BTN_* names below. The names
 # here (KEY_1, KEY_Q, ...) are placeholders — confirm the real ones for your unit.
 

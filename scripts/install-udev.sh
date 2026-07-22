@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the rusty-tartarus udev rule so the Tartarus Pro input/hidraw nodes
+# Install the tartarust udev rule so the Tartarus Pro input/hidraw nodes
 # and /dev/uinput are accessible without root. Run with sudo:
 #
 #   sudo scripts/install-udev.sh
@@ -10,7 +10,7 @@
 # below, in which case start a new login session first.
 set -euo pipefail
 
-RULE_NAME="99-rusty-tartarus.rules"
+RULE_NAME="99-tartarust.rules"
 DEST_DIR="/etc/udev/rules.d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC_RULE="${SCRIPT_DIR}/../docs/packaging/${RULE_NAME}"

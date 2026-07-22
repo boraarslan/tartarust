@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/tartarus-protocol",
-    "crates/tartarus-hid",
-    "crates/tartarus-ipc",
-    "crates/tartarus-daemon",
-    "crates/tartarus-cli",
-    "crates/tartarus-ui",
+    "crates/tartarust-protocol",
+    "crates/tartarust-hid",
+    "crates/tartarust-ipc",
+    "crates/tartarust-daemon",
+    "crates/tartarust-cli",
+    "crates/tartarust-ui",
 ]
 # With a root [package] present, cargo's default member set silently collapses
 # to JUST the root package — a bare `cargo test` would then build only the
@@ -14,15 +14,18 @@ members = [
 # so the muscle-memory `cargo build`/`cargo test` keep covering the workspace.
 default-members = [
     ".",
-    "crates/tartarus-protocol",
-    "crates/tartarus-hid",
-    "crates/tartarus-ipc",
-    "crates/tartarus-daemon",
-    "crates/tartarus-cli",
-    "crates/tartarus-ui",
+    "crates/tartarust-protocol",
+    "crates/tartarust-hid",
+    "crates/tartarust-ipc",
+    "crates/tartarust-daemon",
+    "crates/tartarust-cli",
+    "crates/tartarust-ui",
 ]
 
 [workspace.package]
+# One version for the whole workspace: every crate sets `version.workspace = true`
+# so a single bump here moves the root package and all six member crates together.
+version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = ["bora.rs <bora.rs@pm.me>"]
@@ -45,12 +48,12 @@ serde_json = "1"
 # async runtime (daemon)
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal"] }
 # internal crates
-tartarus-protocol = { path = "crates/tartarus-protocol" }
-tartarus-hid = { path = "crates/tartarus-hid" }
-tartarus-ipc = { path = "crates/tartarus-ipc" }
-tartarus-daemon = { path = "crates/tartarus-daemon" }
-tartarus-cli = { path = "crates/tartarus-cli" }
-tartarus-ui = { path = "crates/tartarus-ui" }
+tartarust-protocol = { path = "crates/tartarust-protocol" }
+tartarust-hid = { path = "crates/tartarust-hid" }
+tartarust-ipc = { path = "crates/tartarust-ipc" }
+tartarust-daemon = { path = "crates/tartarust-daemon" }
+tartarust-cli = { path = "crates/tartarust-cli" }
+tartarust-ui = { path = "crates/tartarust-ui" }
 
 [workspace.lints.rust]
 unused_must_use = "warn"
@@ -63,31 +66,31 @@ uninlined_format_args = "allow"
 # `src/bin/*.rs` shims calling a public entry fn in each member crate — all real
 # code stays in the crates. A root package is implicitly a workspace member.
 [package]
-name = "rusty-tartarus"
-version = "0.1.0"
+name = "tartarust"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "Razer Tartarus Pro userspace driver suite: daemon + CLI + UI in one install."
 
-# Preserve the exact per-crate binary names (`tartarus` is the CLI's name).
+# Preserve the exact per-crate binary names (`tartarust` is the CLI's name).
 [[bin]]
-name = "tartarus-daemon"
-path = "src/bin/tartarus-daemon.rs"
+name = "tartarust-daemon"
+path = "src/bin/tartarust-daemon.rs"
 
 [[bin]]
-name = "tartarus"
-path = "src/bin/tartarus.rs"
+name = "tartarust"
+path = "src/bin/tartarust.rs"
 
 [[bin]]
-name = "tartarus-ui"
-path = "src/bin/tartarus-ui.rs"
+name = "tartarust-ui"
+path = "src/bin/tartarust-ui.rs"
 
 [dependencies]
-tartarus-daemon = { workspace = true }
-tartarus-cli = { workspace = true }
-tartarus-ui = { workspace = true }
+tartarust-daemon = { workspace = true }
+tartarust-cli = { workspace = true }
+tartarust-ui = { workspace = true }
 anyhow = { workspace = true }
 
 [lints]
