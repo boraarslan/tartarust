@@ -54,4 +54,7 @@ cargo build --bin tartarust-ui && ./scripts/headless-screenshot.sh ./target/debu
   device (`hidraw` + EVIOCGRAB on the keypad's NKRO node); the UI and CLI only
   talk to it over the control socket (`$XDG_RUNTIME_DIR/tartarust.sock`, override
   `TARTARUST_SOCKET`). Never grab a non-Tartarus device.
-- Do not run workspace-wide `cargo fmt`; format only files you touched.
+- CI (`.github/workflows/ci.yml`) gates on `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `cargo test --workspace`. Keep the tree rustfmt-clean and clippy-clean; run
+  those three locally before pushing.
