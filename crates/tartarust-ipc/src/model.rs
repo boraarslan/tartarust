@@ -195,7 +195,10 @@ pub enum MacroStep {
 /// A named macro: an ordered sequence of steps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Macro {
-    /// Macro name (referenced by [`BindAction::Macro`]).
+    /// Macro name (referenced by [`BindAction::Macro`]). Defaults to empty for
+    /// the same hand-written-table tolerance as [`Profile::name`]; map-keyed
+    /// consumers overwrite it with the table key.
+    #[serde(default)]
     pub name: String,
     /// Ordered steps.
     pub steps: Vec<MacroStep>,
@@ -205,7 +208,11 @@ pub struct Macro {
 /// application (M4 auto-switch; data-only for now).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Profile {
-    /// Profile name (unique within the config).
+    /// Profile name (unique within the config). Defaults to empty so a
+    /// hand-written config/bundle table may omit it — every consumer that maps
+    /// profiles by name (config load, bundle parse) overwrites it with the
+    /// authoritative map key, and the daemon rejects an empty name at import.
+    #[serde(default)]
     pub name: String,
     /// Application that auto-activates this profile (M4; unused at runtime yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]

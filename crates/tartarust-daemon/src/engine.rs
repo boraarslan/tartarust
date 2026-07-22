@@ -766,8 +766,12 @@ impl Engine {
                 })
             })
             .collect();
+        // Same map-key rule for the profile itself: a hand-edited config's
+        // stale inline `name` must not become the bundle's identity.
+        let mut profile = profile.clone();
+        profile.name = name;
         (
-            Response::ProfileExport(tartarust_ipc::ProfileExport::new(profile.clone(), macros)),
+            Response::ProfileExport(tartarust_ipc::ProfileExport::new(profile, macros)),
             vec![],
         )
     }
@@ -812,9 +816,13 @@ impl Engine {
         }
         if !overwrite {
             if self.profiles.contains_key(&target) {
+                // Name the blast radius: overwrite is one flag for BOTH scopes,
+                // so steering someone here for a mere name collision must say
+                // it also green-lights replacing conflicting macros.
                 return (
                     err(format!(
-                        "profile already exists: {target} (re-import with overwrite, or rename)"
+                        "profile already exists: {target} (rename the import, or re-import with \
+                         overwrite — which also replaces any conflicting bundled macros)"
                     )),
                     vec![],
                 );
@@ -834,14 +842,28 @@ impl Engine {
         }
         // Validate + canonicalize the bind keys of both layers, mirroring
         // `set_bind`'s boundary rule: reject unknown names, store under the
-        // `key_name(code)` spelling `resolve` looks up by.
+        // `key_name(code)` spelling `resolve` looks up by. Unlike set_bind's
+        // one-key-at-a-time flow, a bulk map can hold two ALIASES of the same
+        // code (evdev has several) — that would silently drop one action on
+        // insert, so it's a conflict, not a merge.
         for layer in [Layer::Base, Layer::Hypershift] {
             let mut canonical = BTreeMap::new();
+            let mut spelling: BTreeMap<String, String> = BTreeMap::new();
             for (key, action) in std::mem::take(profile.layer_mut(layer)) {
                 let Some(code) = parse_key(&key) else {
                     return (err(format!("unknown key name in bundle: {key}")), vec![]);
                 };
-                canonical.insert(key_name(code), action);
+                let name = key_name(code);
+                if let Some(first) = spelling.insert(name.clone(), key.clone()) {
+                    return (
+                        err(format!(
+                            "bundle binds {first} and {key}, which are aliases of the same \
+                             physical key ({name})"
+                        )),
+                        vec![],
+                    );
+                }
+                canonical.insert(name, action);
             }
             *profile.layer_mut(layer) = canonical;
         }
@@ -2611,6 +2633,64 @@ mod tests {
             panic!("expected the imported profile");
         };
         assert_eq!(got.linked_app.as_deref(), Some("editor"));
+    }
+
+    /// Two bind keys that are ALIASES of one physical key (evdev maps both
+    /// names to the same code) are a conflict, not a silent last-wins merge.
+    #[test]
+    fn import_rejects_aliased_bind_keys() {
+        let mut e = Engine::new(cfg(vec![], vec![]));
+        // KEY_ZOOM and KEY_FULL_SCREEN both parse to code 372 (canonical
+        // spelling KEY_ZOOM) — verified against this evdev version.
+        let mut p = Profile::new("fresh");
+        p.base.insert("KEY_ZOOM".into(), key_action(&["KEY_F1"]));
+        p.base
+            .insert("KEY_FULL_SCREEN".into(), key_action(&["KEY_F2"]));
+        let (resp, _) = e.apply(
+            Request::ImportProfile {
+                profile: p,
+                macros: vec![],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        let Response::Error { message } = resp else {
+            panic!("aliased bind keys must reject the import");
+        };
+        assert!(
+            message.contains("KEY_ZOOM") && message.contains("KEY_FULL_SCREEN"),
+            "the error must name both spellings: {message}"
+        );
+        assert!(matches!(
+            e.apply(
+                Request::GetProfile {
+                    name: "fresh".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+    }
+
+    /// Export stamps the profiles-map key onto the bundle's profile name, so a
+    /// hand-edited config's stale inline `name` can't become the exported
+    /// identity (the macro side of the same rule is covered above).
+    #[test]
+    fn export_normalizes_the_profile_name_to_its_map_key() {
+        let mut config = cfg(vec![], vec![]);
+        config.profiles.get_mut("default").unwrap().name = "stale".into();
+        let mut e = Engine::new(config);
+        let (Response::ProfileExport(bundle), _) = e.apply(
+            Request::ExportProfile {
+                name: "default".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected a profile bundle");
+        };
+        assert_eq!(bundle.profile.name, "default");
     }
 
     /// Bind keys get set_bind's boundary treatment: an unknown key name rejects

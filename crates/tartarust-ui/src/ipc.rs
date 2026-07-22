@@ -454,6 +454,23 @@ pub fn delete_profile(store: dioxus::prelude::Signal<AppState>, name: String) {
     fire_or_resync(store, Request::DeleteProfile { name });
 }
 
+/// How long the export/import dialogs wait for one daemon reply. Unlike every
+/// other UI mutation (fire-and-forget), these flows BLOCK a modal on the
+/// answer — and the modal refuses dismissal while busy, so an unbounded wait
+/// on a wedged daemon would lock the screen forever.
+const DIALOG_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// [`send`] bounded by [`DIALOG_REPLY_TIMEOUT`], for the dialog-blocking flows.
+async fn send_bounded(request: Request) -> Result<Response, String> {
+    match tokio::time::timeout(DIALOG_REPLY_TIMEOUT, send(request)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "daemon did not reply within {}s",
+            DIALOG_REPLY_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 /// Fetch a profile's portable export bundle (profile + referenced macros) from
 /// the daemon. `Err` carries a display-ready message (daemon rejection or
 /// transport failure — the latter also flips the offline badge).
@@ -461,7 +478,7 @@ pub async fn export_profile_bundle(
     store: dioxus::prelude::Signal<AppState>,
     name: String,
 ) -> Result<tartarust_ipc::ProfileExport, String> {
-    match send(Request::ExportProfile { name }).await {
+    match send_bounded(Request::ExportProfile { name }).await {
         Ok(Response::ProfileExport(bundle)) => {
             mark_online(store);
             Ok(bundle)
@@ -484,35 +501,42 @@ pub async fn export_profile_bundle(
 }
 
 /// Import profile entries (from an export bundle or a whole config file) into
-/// the daemon, sequentially; stops at the first rejection. Ends with a full
-/// [`resync`] either way, so the profile list, macros, and the unsaved flag are
+/// the daemon, sequentially. Per-profile rejections don't stop the loop —
+/// "imports every profile in it" must mean every importable one, matching the
+/// CLI — only a transport failure aborts. `rename` applies when there is
+/// exactly ONE entry (like the CLI's --rename). Ends with a full [`resync`]
+/// either way, so the profile list, macros, and the unsaved flag are
 /// authoritative — like every other edit, an import is session-live until the
-/// user presses Save. Returns how many profiles were imported.
+/// user presses Save. `Ok` is how many profiles landed; `Err` still reports
+/// how many landed alongside what failed.
 pub async fn import_profile_entries(
     mut store: dioxus::prelude::Signal<AppState>,
     entries: Vec<(tartarust_ipc::Profile, Vec<Macro>)>,
+    rename: Option<String>,
     overwrite: bool,
 ) -> Result<usize, String> {
     use dioxus::prelude::WritableExt;
+    if rename.is_some() && entries.len() != 1 {
+        return Err("a rename only applies to single-profile bundle files".into());
+    }
     let mut imported = 0usize;
-    let mut failure = None;
+    let mut failures: Vec<String> = Vec::new();
     for (profile, macros) in entries {
-        let shown = profile.name.clone();
-        match send(Request::ImportProfile {
+        let shown = rename.clone().unwrap_or_else(|| profile.name.clone());
+        match send_bounded(Request::ImportProfile {
             profile,
             macros,
-            rename: None,
+            rename: rename.clone(),
             overwrite,
         })
         .await
         {
             Ok(Response::Ack) => imported += 1,
             Ok(Response::Error { message }) => {
-                failure = Some(format!("importing “{shown}”: {message}"));
-                break;
+                failures.push(format!("“{shown}”: {message}"));
             }
             Ok(other) => {
-                failure = Some(format!("unexpected daemon reply: {other:?}"));
+                failures.push(format!("“{shown}”: unexpected daemon reply: {other:?}"));
                 break;
             }
             Err(e) => {
@@ -520,7 +544,7 @@ pub async fn import_profile_entries(
                 // live in the daemon, so the unsaved flag + resync below must
                 // still run (resync itself no-ops while unreachable).
                 mark_offline(store, &e);
-                failure = Some("daemon unreachable — import aborted".into());
+                failures.push(format!("“{shown}”: {e} — import aborted"));
                 break;
             }
         }
@@ -531,9 +555,16 @@ pub async fn import_profile_entries(
         store.with_mut(|s| s.unsaved = true);
     }
     resync(store).await;
-    match failure {
-        Some(message) => Err(message),
-        None => Ok(imported),
+    if failures.is_empty() {
+        Ok(imported)
+    } else if imported > 0 {
+        Err(format!(
+            "imported {imported}, but {} failed — {} (press Save to keep the imported ones)",
+            failures.len(),
+            failures.join("; ")
+        ))
+    } else {
+        Err(failures.join("; "))
     }
 }
 

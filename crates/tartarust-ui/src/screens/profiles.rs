@@ -42,6 +42,7 @@ pub fn Profiles() -> Element {
     let mut export_overwrite = use_signal(|| false);
     let mut import_open = use_signal(|| false);
     let mut import_path = use_signal(String::new);
+    let mut import_rename = use_signal(String::new);
     let mut import_overwrite = use_signal(|| false);
     let mut io_busy = use_signal(|| false);
     let mut io_error = use_signal::<Option<String>>(|| None);
@@ -111,6 +112,7 @@ pub fn Profiles() -> Element {
                         io_note.set(None);
                         io_error.set(None);
                         import_path.set(String::new());
+                        import_rename.set(String::new());
                         import_overwrite.set(false);
                         import_open.set(true);
                     },
@@ -481,9 +483,10 @@ pub fn Profiles() -> Element {
                 on_close: move |_| import_open.set(false),
                 on_confirm: move |_| {
                     let path = import_path();
+                    let rename = import_rename();
                     let overwrite = import_overwrite();
                     spawn(async move {
-                        match do_import(store, path, overwrite).await {
+                        match do_import(store, path, rename, overwrite).await {
                             Ok(msg) => {
                                 io_note.set(Some(msg));
                                 import_open.set(false);
@@ -493,6 +496,15 @@ pub fn Profiles() -> Element {
                         io_busy.set(false);
                     });
                 },
+                // The daemon's collision error suggests renaming — so the
+                // dialog must actually offer one (single-profile files only,
+                // mirroring the CLI's --rename).
+                input {
+                    class: "text-input",
+                    placeholder: "import under a different name (optional)",
+                    value: "{import_rename}",
+                    oninput: move |e| import_rename.set(e.value()),
+                }
                 crate::components::Toggle {
                     label: "Overwrite existing profiles/macros",
                     on: import_overwrite(),
@@ -568,8 +580,47 @@ fn IoDialog(
     }
 }
 
-/// Fetch the bundle from the daemon and write it where the dialog says. The
-/// small sync file write is fine on this task (same as desktop.rs's installs).
+/// Run a blocking file operation off the UI executor, bounded so a hung
+/// filesystem (NFS, autofs) can't pin the busy dialog forever. The blocking
+/// thread may linger past the timeout; the dialog does not.
+async fn bounded_blocking<T: Send + 'static>(
+    what: &'static str,
+    op: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    let deadline = std::time::Duration::from_secs(10);
+    match tokio::time::timeout(deadline, tokio::task::spawn_blocking(op)).await {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(format!("{what}: background task failed: {e}")),
+        Err(_) => Err(format!("{what} timed out after {}s", deadline.as_secs())),
+    }
+}
+
+/// Write the bundle file. Without `overwrite`, `create_new` (O_EXCL) refuses an
+/// existing destination at the filesystem level — unlike an `exists()`
+/// pre-check it cannot race a concurrent create, and it also refuses a
+/// dangling symlink instead of writing through it.
+fn write_bundle_file(path: &std::path::Path, toml: &str, overwrite: bool) -> Result<(), String> {
+    use std::io::Write;
+    if overwrite {
+        return std::fs::write(path, toml).map_err(|e| format!("writing {}: {e}", path.display()));
+    }
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut f) => f
+            .write_all(toml.as_bytes())
+            .map_err(|e| format!("writing {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
+            "{} already exists — toggle “Overwrite an existing file” to replace it",
+            path.display()
+        )),
+        Err(e) => Err(format!("writing {}: {e}", path.display())),
+    }
+}
+
+/// Fetch the bundle from the daemon and write it where the dialog says.
 async fn do_export(
     store: Signal<crate::model::AppState>,
     name: String,
@@ -581,20 +632,16 @@ async fn do_export(
         return Err("enter a destination path".into());
     }
     let path = crate::model::expand_tilde(trimmed);
-    // The default path is deterministic, so a re-export would silently clobber
-    // the previous bundle (someone's backup) — require the explicit toggle.
-    if !overwrite && path.exists() {
-        return Err(format!(
-            "{} already exists — toggle “Overwrite an existing file” to replace it",
-            path.display()
-        ));
-    }
     let bundle = crate::ipc::export_profile_bundle(store, name.clone()).await?;
     let toml = tartarust_ipc::bundle::to_toml(&bundle)?;
-    std::fs::write(&path, &toml).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    let macro_count = bundle.macros.len();
+    let write_path = path.clone();
+    bounded_blocking("writing the bundle", move || {
+        write_bundle_file(&write_path, &toml, overwrite)
+    })
+    .await??;
     Ok(format!(
-        "Exported “{name}” ({} macro(s)) to {}",
-        bundle.macros.len(),
+        "Exported “{name}” ({macro_count} macro(s)) to {}",
         path.display()
     ))
 }
@@ -605,20 +652,27 @@ async fn do_export(
 async fn do_import(
     store: Signal<crate::model::AppState>,
     path_raw: String,
+    rename_raw: String,
     overwrite: bool,
 ) -> Result<String, String> {
     let trimmed = path_raw.trim();
     if trimmed.is_empty() {
         return Err("enter a file path".into());
     }
+    let rename = rename_raw.trim();
+    let rename = (!rename.is_empty()).then(|| rename.to_string());
     let path = crate::model::expand_tilde(trimmed);
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let read_path = path.clone();
+    let text = bounded_blocking("reading the file", move || {
+        std::fs::read_to_string(&read_path)
+    })
+    .await?
+    .map_err(|e| format!("reading {}: {e}", path.display()))?;
     let entries = match tartarust_ipc::bundle::parse(&text)? {
         tartarust_ipc::bundle::ImportSource::Bundle(b) => vec![(b.profile, b.macros)],
         tartarust_ipc::bundle::ImportSource::Config(entries) => entries,
     };
-    let n = crate::ipc::import_profile_entries(store, entries, overwrite).await?;
+    let n = crate::ipc::import_profile_entries(store, entries, rename, overwrite).await?;
     Ok(format!("Imported {n} profile(s) — press Save to keep"))
 }
 

@@ -92,10 +92,12 @@ enum ProfileOp {
     Export {
         /// Profile name.
         name: String,
-        /// Write to this file instead of stdout.
+        /// Write to this file instead of stdout (`-` also means stdout).
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Commit the daemon's pending session edits to its config file.
+    Save,
     /// Import profiles from an export file — or a whole config file — and save.
     Import {
         /// A `tartarust profile export` file, or a full config.toml (e.g.
@@ -179,6 +181,9 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
                 print_response(send(&socket, &Request::SwitchProfile { name }).await?)
             }
             ProfileOp::Export { name, output } => export_profile(&socket, name, output).await?,
+            ProfileOp::Save => {
+                print_response(send(&socket, &Request::SaveProfile { name: None }).await?)
+            }
             ProfileOp::Import {
                 file,
                 rename,
@@ -243,7 +248,8 @@ async fn export_profile(socket: &Path, name: String, output: Option<PathBuf>) ->
         Response::ProfileExport(bundle) => {
             let toml = tartarust_ipc::bundle::to_toml(&bundle).map_err(anyhow::Error::msg)?;
             match output {
-                Some(path) => {
+                // `-o -` means stdout, mirroring `import -` reading stdin.
+                Some(path) if path != Path::new("-") => {
                     std::fs::write(&path, &toml)
                         .with_context(|| format!("writing {}", path.display()))?;
                     println!(
@@ -252,7 +258,7 @@ async fn export_profile(socket: &Path, name: String, output: Option<PathBuf>) ->
                         path.display()
                     );
                 }
-                None => print!("{toml}"),
+                _ => print!("{toml}"),
             }
             Ok(())
         }
@@ -288,10 +294,19 @@ async fn import_profiles(
             entries
         }
     };
+    // SaveProfile persists the daemon's ENTIRE live config — including any
+    // unrelated session edits the user has deliberately not saved. Snapshot
+    // that state up front so the auto-save below can refuse to piggyback them.
+    let had_unsaved = match send(socket, &Request::GetStatus).await? {
+        Response::Status(status) => status.unsaved_changes,
+        Response::Error { message } => bail!("querying daemon status: {message}"),
+        other => bail!("unexpected daemon reply: {other:?} — daemon/CLI version mismatch?"),
+    };
     // Don't stop at a rejection: with a multi-profile config file, later
     // profiles may import fine — and whatever DID land is live in the daemon,
     // so the save step below must still run or the successes would silently
-    // evaporate on the next daemon restart.
+    // evaporate on the next daemon restart. That is also why a TRANSPORT
+    // failure breaks instead of bubbling out with `?`.
     let mut imported = 0usize;
     let mut failures = Vec::new();
     for (profile, macros) in entries {
@@ -306,27 +321,56 @@ async fn import_profiles(
                 overwrite: force,
             },
         )
-        .await?
+        .await
         {
-            Response::Error { message } => {
-                eprintln!("error: importing `{shown}`: {message}");
-                failures.push(shown);
-            }
-            _ => {
+            Ok(Response::Ack) => {
                 println!("imported profile `{shown}` ({macro_count} macro(s))");
                 imported += 1;
             }
+            Ok(Response::Error { message }) => {
+                eprintln!("error: importing `{shown}`: {message}");
+                failures.push(shown);
+            }
+            Ok(other) => {
+                eprintln!(
+                    "error: importing `{shown}`: unexpected daemon reply: {other:?} — \
+                     daemon/CLI version mismatch?"
+                );
+                failures.push(shown);
+                break;
+            }
+            Err(e) => {
+                eprintln!("error: importing `{shown}`: {e:#}");
+                failures.push(shown);
+                break;
+            }
         }
     }
-    if no_save {
-        println!("session-only (--no-save): save from the UI or re-run without --no-save to keep");
-    } else if imported > 0 {
-        if let Response::Error { message } =
-            send(socket, &Request::SaveProfile { name: None }).await?
-        {
-            bail!("import applied but saving the config failed: {message}");
+    if imported > 0 {
+        if no_save {
+            println!(
+                "session-only (--no-save): `tartarust profile save` or the UI's Save keeps it"
+            );
+        } else if had_unsaved {
+            // Saving would commit those unrelated edits too — leave the
+            // decision to the user rather than silently widening the write.
+            println!(
+                "NOT auto-saving: the daemon already holds unsaved session edits, and a save \
+                 commits the whole config. Run `tartarust profile save` to persist everything, \
+                 or press Save in the UI."
+            );
+        } else {
+            match send(socket, &Request::SaveProfile { name: None }).await {
+                Ok(Response::Error { message }) => {
+                    bail!("import applied but saving the config failed: {message}")
+                }
+                Ok(_) => println!("saved to the daemon's config"),
+                Err(e) => bail!(
+                    "import applied but saving failed: {e:#} — the imported profile(s) are \
+                     live but unsaved"
+                ),
+            }
         }
-        println!("saved to the daemon's config");
     }
     if !failures.is_empty() {
         bail!(

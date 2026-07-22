@@ -56,12 +56,12 @@ pub fn parse(text: &str) -> Result<ImportSource, String> {
         // A `format` key means the file claims to be a bundle: gate on the
         // envelope FIRST (a newer build's bundle may not deserialize at all),
         // then surface the real parse error rather than the config fallback's.
-        ProfileExport::check_envelope(
-            &format,
-            envelope
-                .version
-                .unwrap_or(crate::model::PROFILE_EXPORT_VERSION),
-        )?;
+        // A missing version is NOT assumed current — that would let an
+        // unversioned (hand-mangled or future) bundle skip the gate.
+        let Some(version) = envelope.version else {
+            return Err("bundle is missing its `version` field (a hand-edit removed it?)".into());
+        };
+        ProfileExport::check_envelope(&format, version)?;
         let bundle: ProfileExport =
             toml::from_str(text).map_err(|e| format!("invalid profile bundle: {e}"))?;
         bundle.validate()?;
@@ -213,6 +213,43 @@ steps = []
             vec!["used"]
         );
         assert!(entries[1].1.is_empty());
+    }
+
+    /// A bundle without a `version` field must not skip the gate by defaulting
+    /// to the current version.
+    #[test]
+    fn missing_bundle_version_is_rejected() {
+        let text = "format = \"tartarust-profile\"\n[profile]\nname = \"x\"\n";
+        assert!(parse(text).unwrap_err().contains("version"));
+    }
+
+    /// Hand-written config tables may omit the redundant inline `name` — the
+    /// map key is authoritative and fills it in for profiles AND macros.
+    #[test]
+    fn config_tables_may_omit_inline_names() {
+        let text = r#"
+[profiles.game]
+[profiles.game.base.KEY_A]
+type = "macro"
+name = "burst"
+
+[macros.burst]
+[[macros.burst.steps]]
+step = "delay"
+ms = 5
+"#;
+        let ImportSource::Config(entries) = parse(text).unwrap() else {
+            panic!("nameless tables must still parse as a config import");
+        };
+        assert_eq!(entries[0].0.name, "game");
+        assert_eq!(
+            entries[0]
+                .1
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["burst"]
+        );
     }
 
     /// Neither a bundle nor a config with profiles → a clear error.
