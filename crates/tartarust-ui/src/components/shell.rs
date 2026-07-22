@@ -82,7 +82,7 @@ pub fn Shell() -> Element {
                 return;
             }
             let now = Instant::now();
-            let prev = last_down.peek().clone();
+            let prev = *last_down.peek();
             last_down.set(Some(now));
             match prev {
                 Some(t) if now.duration_since(t) < Duration::from_millis(400) => {
