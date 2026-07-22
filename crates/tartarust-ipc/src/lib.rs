@@ -145,12 +145,15 @@ pub enum Request {
     },
     /// Import a profile bundle (as produced by [`Request::ExportProfile`]).
     ///
-    /// Atomic: on any rejection (name collision without `overwrite`, or a
-    /// same-name macro with different steps) nothing is changed. Bundled macros
-    /// identical to existing ones import silently; the profile's `linked_app`
-    /// is kept as-is. Like every other edit this applies live and is persisted
-    /// only on [`Request::SaveProfile`]. If the imported name is the active
-    /// profile (an in-place overwrite), its binds/lighting re-apply immediately.
+    /// Atomic: on any rejection (name collision without `overwrite`, a
+    /// same-name macro with different steps, two conflicting same-name macros
+    /// within the bundle, or an unknown bind key name) nothing is changed.
+    /// Bundled macros identical to existing ones import silently; bind keys are
+    /// validated and canonicalized like `SetBind`; a `linked_app` another
+    /// profile already claims is cleared (auto-switch must stay unambiguous).
+    /// Like every other edit this applies live and is persisted only on
+    /// [`Request::SaveProfile`]. If the imported name is the active profile
+    /// (an in-place overwrite), its binds/lighting re-apply immediately.
     ImportProfile {
         /// The profile to add.
         profile: Profile,

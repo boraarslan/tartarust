@@ -297,16 +297,21 @@ impl ProfileExport {
 
     /// Check the envelope: right `format` marker, version not from the future.
     pub fn validate(&self) -> Result<(), String> {
-        if self.format != PROFILE_EXPORT_FORMAT {
+        Self::check_envelope(&self.format, self.version)
+    }
+
+    /// The envelope rule behind [`ProfileExport::validate`], callable BEFORE a
+    /// full parse — a bundle from a newer build may not deserialize at all, and
+    /// the version gate must still fire from the bare `format`/`version` pair.
+    pub fn check_envelope(format: &str, version: u32) -> Result<(), String> {
+        if format != PROFILE_EXPORT_FORMAT {
             return Err(format!(
-                "not a {PROFILE_EXPORT_FORMAT} bundle (format = \"{}\")",
-                self.format
+                "not a {PROFILE_EXPORT_FORMAT} bundle (format = \"{format}\")"
             ));
         }
-        if self.version > PROFILE_EXPORT_VERSION {
+        if version > PROFILE_EXPORT_VERSION {
             return Err(format!(
-                "bundle version {} is newer than this build supports ({PROFILE_EXPORT_VERSION}) — upgrade tartarust",
-                self.version
+                "bundle version {version} is newer than this build supports ({PROFILE_EXPORT_VERSION}) — upgrade tartarust"
             ));
         }
         Ok(())

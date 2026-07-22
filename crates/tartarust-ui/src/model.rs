@@ -807,12 +807,15 @@ pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
 /// take typed paths, and `~` is how people write them; everything else passes
 /// through untouched. With no `$HOME` the path is returned as-is.
 pub fn expand_tilde(path: &str) -> std::path::PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
+    // A set-but-empty $HOME would silently produce cwd-relative paths.
+    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
         if path == "~" {
             return std::path::PathBuf::from(home);
         }
         if let Some(rest) = path.strip_prefix("~/") {
-            return std::path::Path::new(&home).join(rest);
+            // Strip extra slashes: `~//x` must stay under $HOME — a leading
+            // `/` in `rest` would make `join` DISCARD the base entirely.
+            return std::path::Path::new(&home).join(rest.trim_start_matches('/'));
         }
     }
     std::path::PathBuf::from(path)
@@ -842,6 +845,12 @@ mod tests {
         assert_eq!(expand_tilde("~"), std::path::PathBuf::from(&home));
         assert_eq!(
             expand_tilde("~/x/y.toml"),
+            std::path::Path::new(&home).join("x/y.toml")
+        );
+        // A doubled slash must not escape $HOME (Path::join treats an absolute
+        // right-hand side as a full replacement).
+        assert_eq!(
+            expand_tilde("~//x/y.toml"),
             std::path::Path::new(&home).join("x/y.toml")
         );
         // No expansion mid-path or for other prefixes.

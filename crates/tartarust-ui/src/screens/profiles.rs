@@ -39,6 +39,7 @@ pub fn Profiles() -> Element {
     // toolbar success note that survives the dialog closing.
     let mut export_for = use_signal::<Option<String>>(|| None);
     let mut export_path = use_signal(String::new);
+    let mut export_overwrite = use_signal(|| false);
     let mut import_open = use_signal(|| false);
     let mut import_path = use_signal(String::new);
     let mut import_overwrite = use_signal(|| false);
@@ -367,6 +368,7 @@ pub fn Profiles() -> Element {
                                                     io_note.set(None);
                                                     io_error.set(None);
                                                     export_path.set(crate::model::default_export_path(&name_export));
+                                                    export_overwrite.set(false);
                                                     export_for.set(Some(name_export.clone()));
                                                 },
                                                 "Export…"
@@ -423,64 +425,42 @@ pub fn Profiles() -> Element {
         if let Some(exp_name) = export_for() {
             {
                 let exp_confirm = exp_name.clone();
+                let sub = format!(
+                    "Writes “{exp_name}” — with the macros it references — as a portable TOML bundle. Import it on any machine."
+                );
                 rsx! {
-                    div {
-                        class: "overlay",
-                        onclick: move |_| {
-                            if !io_busy() {
-                                export_for.set(None);
-                                io_error.set(None);
-                            }
-                        },
-                        div {
-                            class: "dialog",
-                            onclick: move |e| e.stop_propagation(),
-                            div { class: "dialog-title", "Export profile" }
-                            div { class: "dialog-sub",
-                                "Writes “{exp_name}” — with the macros it references — as a portable TOML bundle. Import it on any machine."
-                            }
-                            input {
-                                class: "text-input",
-                                autofocus: true,
-                                value: "{export_path}",
-                                oninput: move |e| export_path.set(e.value()),
-                            }
-                            if let Some(err) = io_error() {
-                                div { class: "dialog-error", "{err}" }
-                            }
-                            div { class: "dialog-actions",
-                                button {
-                                    class: "btn",
-                                    onclick: move |_| {
+                    IoDialog {
+                        title: "Export profile",
+                        sub,
+                        placeholder: "",
+                        path: export_path,
+                        busy: io_busy,
+                        error: io_error,
+                        confirm_label: "Export",
+                        busy_label: "Exporting…",
+                        on_close: move |_| export_for.set(None),
+                        on_confirm: move |_| {
+                            let name = exp_confirm.clone();
+                            let path = export_path();
+                            let overwrite = export_overwrite();
+                            spawn(async move {
+                                match do_export(store, name, path, overwrite).await {
+                                    Ok(msg) => {
+                                        io_note.set(Some(msg));
                                         export_for.set(None);
-                                        io_error.set(None);
-                                    },
-                                    "Cancel"
+                                    }
+                                    Err(e) => io_error.set(Some(e)),
                                 }
-                                button {
-                                    class: "btn primary",
-                                    onclick: move |_| {
-                                        if io_busy() {
-                                            return;
-                                        }
-                                        io_busy.set(true);
-                                        io_error.set(None);
-                                        let name = exp_confirm.clone();
-                                        let path = export_path();
-                                        spawn(async move {
-                                            match do_export(store, name, path).await {
-                                                Ok(msg) => {
-                                                    io_note.set(Some(msg));
-                                                    export_for.set(None);
-                                                }
-                                                Err(e) => io_error.set(Some(e)),
-                                            }
-                                            io_busy.set(false);
-                                        });
-                                    },
-                                    if io_busy() { "Exporting…" } else { "Export" }
-                                }
-                            }
+                                io_busy.set(false);
+                            });
+                        },
+                        crate::components::Toggle {
+                            label: "Overwrite an existing file",
+                            on: export_overwrite(),
+                            on_toggle: move |_| {
+                                let next = !export_overwrite();
+                                export_overwrite.set(next);
+                            },
                         }
                     }
                 }
@@ -489,71 +469,98 @@ pub fn Profiles() -> Element {
 
         // ── Import dialog ─────────────────────────────────────────────────────
         if import_open() {
-            div {
-                class: "overlay",
-                onclick: move |_| {
-                    if !io_busy() {
-                        import_open.set(false);
-                        io_error.set(None);
-                    }
-                },
-                div {
-                    class: "dialog",
-                    onclick: move |e| e.stop_propagation(),
-                    div { class: "dialog-title", "Import profiles" }
-                    div { class: "dialog-sub",
-                        "Path to an exported profile bundle — or a full config.toml (e.g. ~/.config/rusty-tartarus/config.toml), which imports every profile in it. Imports apply live and persist when you press Save."
-                    }
-                    input {
-                        class: "text-input",
-                        autofocus: true,
-                        placeholder: "~/profile.tartarust.toml",
-                        value: "{import_path}",
-                        oninput: move |e| import_path.set(e.value()),
-                    }
-                    crate::components::Toggle {
-                        label: "Overwrite existing profiles/macros",
-                        on: import_overwrite(),
-                        on_toggle: move |_| {
-                            let next = !import_overwrite();
-                            import_overwrite.set(next);
-                        },
-                    }
-                    if let Some(err) = io_error() {
-                        div { class: "dialog-error", "{err}" }
-                    }
-                    div { class: "dialog-actions",
-                        button {
-                            class: "btn",
-                            onclick: move |_| {
+            IoDialog {
+                title: "Import profiles",
+                sub: "Path to an exported profile bundle — or a full config.toml (e.g. ~/.config/rusty-tartarus/config.toml), which imports every profile in it. Imports apply live and persist when you press Save.",
+                placeholder: "~/profile.tartarust.toml",
+                path: import_path,
+                busy: io_busy,
+                error: io_error,
+                confirm_label: "Import",
+                busy_label: "Importing…",
+                on_close: move |_| import_open.set(false),
+                on_confirm: move |_| {
+                    let path = import_path();
+                    let overwrite = import_overwrite();
+                    spawn(async move {
+                        match do_import(store, path, overwrite).await {
+                            Ok(msg) => {
+                                io_note.set(Some(msg));
                                 import_open.set(false);
-                                io_error.set(None);
-                            },
-                            "Cancel"
+                            }
+                            Err(e) => io_error.set(Some(e)),
                         }
-                        button {
-                            class: "btn primary",
-                            onclick: move |_| {
-                                if io_busy() {
-                                    return;
-                                }
-                                io_busy.set(true);
-                                io_error.set(None);
-                                let path = import_path();
-                                let overwrite = import_overwrite();
-                                spawn(async move {
-                                    match do_import(store, path, overwrite).await {
-                                        Ok(msg) => {
-                                            io_note.set(Some(msg));
-                                            import_open.set(false);
-                                        }
-                                        Err(e) => io_error.set(Some(e)),
-                                    }
-                                    io_busy.set(false);
-                                });
-                            },
-                            if io_busy() { "Importing…" } else { "Import" }
-                        }
+                        io_busy.set(false);
+                    });
+                },
+                crate::components::Toggle {
+                    label: "Overwrite existing profiles/macros",
+                    on: import_overwrite(),
+                    on_toggle: move |_| {
+                        let next = !import_overwrite();
+                        import_overwrite.set(next);
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// The shared export/import dialog chassis: overlay, title/sub, path input,
+/// extra rows via `children` (the overwrite Toggle), error slot, and the
+/// Cancel/confirm pair. Dismissal — backdrop click AND Cancel — is refused
+/// while `busy`, so an in-flight operation can never lose its error to a
+/// closed dialog. The confirm handler is invoked with `busy` already set and
+/// `error` cleared; it must clear `busy` when its spawned work finishes.
+#[component]
+fn IoDialog(
+    title: &'static str,
+    sub: String,
+    placeholder: &'static str,
+    mut path: Signal<String>,
+    mut busy: Signal<bool>,
+    mut error: Signal<Option<String>>,
+    confirm_label: &'static str,
+    busy_label: &'static str,
+    on_close: EventHandler<()>,
+    on_confirm: EventHandler<()>,
+    children: Element,
+) -> Element {
+    let mut close = move || {
+        if !busy() {
+            error.set(None);
+            on_close.call(());
+        }
+    };
+    rsx! {
+        div { class: "overlay", onclick: move |_| close(),
+            div { class: "dialog", onclick: move |e| e.stop_propagation(),
+                div { class: "dialog-title", "{title}" }
+                div { class: "dialog-sub", "{sub}" }
+                input {
+                    class: "text-input",
+                    autofocus: true,
+                    placeholder,
+                    value: "{path}",
+                    oninput: move |e| path.set(e.value()),
+                }
+                {children}
+                if let Some(err) = error() {
+                    div { class: "dialog-error", "{err}" }
+                }
+                div { class: "dialog-actions",
+                    button { class: "btn", onclick: move |_| close(), "Cancel" }
+                    button {
+                        class: "btn primary",
+                        onclick: move |_| {
+                            if busy() {
+                                return;
+                            }
+                            busy.set(true);
+                            error.set(None);
+                            on_confirm.call(());
+                        },
+                        if busy() { "{busy_label}" } else { "{confirm_label}" }
                     }
                 }
             }
@@ -567,14 +574,23 @@ async fn do_export(
     store: Signal<crate::model::AppState>,
     name: String,
     path_raw: String,
+    overwrite: bool,
 ) -> Result<String, String> {
     let trimmed = path_raw.trim();
     if trimmed.is_empty() {
         return Err("enter a destination path".into());
     }
+    let path = crate::model::expand_tilde(trimmed);
+    // The default path is deterministic, so a re-export would silently clobber
+    // the previous bundle (someone's backup) — require the explicit toggle.
+    if !overwrite && path.exists() {
+        return Err(format!(
+            "{} already exists — toggle “Overwrite an existing file” to replace it",
+            path.display()
+        ));
+    }
     let bundle = crate::ipc::export_profile_bundle(store, name.clone()).await?;
     let toml = tartarust_ipc::bundle::to_toml(&bundle)?;
-    let path = crate::model::expand_tilde(trimmed);
     std::fs::write(&path, &toml).map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(format!(
         "Exported “{name}” ({} macro(s)) to {}",

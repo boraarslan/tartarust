@@ -24,7 +24,7 @@
 //!   * **Refcount emitted keycodes.** Two physical keys both pressing
 //!     `KEY_LEFTCTRL` only release it once the last holder lets go.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use evdev::{InputEvent, KeyCode, KeyEvent};
 
@@ -756,7 +756,15 @@ impl Engine {
         };
         let macros = tartarust_ipc::referenced_macro_names(profile)
             .iter()
-            .filter_map(|n| self.macros.get(n).cloned())
+            .filter_map(|n| {
+                // The map key is what binds reference and what runtime lookup
+                // uses; force it onto the bundled macro so a hand-edited config
+                // with a mismatched inline `name` can't export a dangling ref.
+                self.macros.get(n).cloned().map(|mut m| {
+                    m.name = n.clone();
+                    m
+                })
+            })
             .collect();
         (
             Response::ProfileExport(tartarust_ipc::ProfileExport::new(profile.clone(), macros)),
@@ -766,9 +774,13 @@ impl Engine {
 
     /// Import a profile bundle. Atomic: every rejection happens before any
     /// state changes. Bundled macros identical to existing ones are a no-op;
-    /// a same-name macro with different steps is a conflict unless `overwrite`.
-    /// Overwriting the ACTIVE profile re-activates it so the new binds/lighting
-    /// take effect live (same path as a profile switch).
+    /// a same-name macro with different steps is a conflict unless `overwrite`
+    /// (two conflicting same-name macros WITHIN the bundle are malformed and
+    /// always rejected). Bind keys get the same validate-and-canonicalize
+    /// treatment as [`Engine::set_bind`] — an unknown key name is a clear error,
+    /// not a silently dead bind. A `linked_app` another profile already claims
+    /// is cleared (the same ambiguity guard as `duplicate_profile`). Overwriting
+    /// the ACTIVE profile re-applies its lighting so the change is live.
     fn import_profile(
         &mut self,
         mut profile: Profile,
@@ -779,6 +791,24 @@ impl Engine {
         let target = rename.unwrap_or_else(|| profile.name.clone());
         if target.is_empty() {
             return (err("imported profile has an empty name".into()), vec![]);
+        }
+        // Same-name-different-steps WITHIN the bundle: malformed regardless of
+        // `overwrite` — last-one-wins would silently drop a definition.
+        {
+            let mut seen: BTreeMap<&str, &Macro> = BTreeMap::new();
+            for m in &macros {
+                if let Some(prev) = seen.insert(m.name.as_str(), m)
+                    && *prev != *m
+                {
+                    return (
+                        err(format!(
+                            "bundle contains two macros named {} with different steps",
+                            m.name
+                        )),
+                        vec![],
+                    );
+                }
+            }
         }
         if !overwrite {
             if self.profiles.contains_key(&target) {
@@ -802,8 +832,31 @@ impl Engine {
                 );
             }
         }
+        // Validate + canonicalize the bind keys of both layers, mirroring
+        // `set_bind`'s boundary rule: reject unknown names, store under the
+        // `key_name(code)` spelling `resolve` looks up by.
+        for layer in [Layer::Base, Layer::Hypershift] {
+            let mut canonical = BTreeMap::new();
+            for (key, action) in std::mem::take(profile.layer_mut(layer)) {
+                let Some(code) = parse_key(&key) else {
+                    return (err(format!("unknown key name in bundle: {key}")), vec![]);
+                };
+                canonical.insert(key_name(code), action);
+            }
+            *profile.layer_mut(layer) = canonical;
+        }
         for m in macros {
             self.macros.insert(m.name.clone(), m);
+        }
+        // An app link another profile already claims would make auto-switch
+        // ambiguous (first match wins) — clear it, like `duplicate_profile`.
+        if let Some(app) = profile.linked_app.clone()
+            && self
+                .profiles
+                .values()
+                .any(|p| p.name != target && p.linked_app.as_deref() == Some(app.as_str()))
+        {
+            profile.linked_app = None;
         }
         profile.name = target.clone();
         self.profiles.insert(target.clone(), profile);
@@ -2462,5 +2515,162 @@ mod tests {
         // The overwrite is live: the imported bind resolves on the next press.
         let down = e.handle_key(KeyCode::KEY_A, 1);
         assert_eq!(keys(&down), vec![(KeyCode::KEY_F5.0, 1)]);
+    }
+
+    /// Two same-name-different-steps macros WITHIN one bundle are malformed:
+    /// rejected even with overwrite (last-one-wins would silently drop one).
+    #[test]
+    fn import_rejects_intra_bundle_macro_conflicts() {
+        let mut e = Engine::new(cfg(vec![], vec![]));
+        let twins = vec![
+            Macro {
+                name: "burst".into(),
+                steps: vec![MacroStep::Delay { ms: 1 }],
+            },
+            Macro {
+                name: "burst".into(),
+                steps: vec![MacroStep::Delay { ms: 2 }],
+            },
+        ];
+        for overwrite in [false, true] {
+            let (resp, _) = e.apply(
+                Request::ImportProfile {
+                    profile: Profile::new("fresh"),
+                    macros: twins.clone(),
+                    rename: None,
+                    overwrite,
+                },
+                "v",
+            );
+            assert!(matches!(resp, Response::Error { .. }));
+        }
+        // Nothing landed.
+        assert!(matches!(
+            e.apply(
+                Request::GetMacro {
+                    name: "burst".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        assert!(!e.is_dirty());
+    }
+
+    /// An imported `linked_app` another profile already claims is cleared (the
+    /// duplicate_profile ambiguity guard); a unique link is kept.
+    #[test]
+    fn import_clears_a_colliding_app_link_but_keeps_a_unique_one() {
+        let mut config = cfg(vec![], vec![]);
+        config.profiles.get_mut("default").unwrap().linked_app = Some("game".into());
+        let mut e = Engine::new(config);
+
+        let mut colliding = Profile::new("backup");
+        colliding.linked_app = Some("game".into());
+        assert_eq!(
+            e.apply(
+                Request::ImportProfile {
+                    profile: colliding,
+                    macros: vec![],
+                    rename: None,
+                    overwrite: false,
+                },
+                "v",
+            )
+            .0,
+            Response::Ack
+        );
+        let (Response::Profile(got), _) = e.apply(
+            Request::GetProfile {
+                name: "backup".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the imported profile");
+        };
+        assert_eq!(got.linked_app, None, "colliding app link must be cleared");
+
+        let mut unique = Profile::new("solo");
+        unique.linked_app = Some("editor".into());
+        e.apply(
+            Request::ImportProfile {
+                profile: unique,
+                macros: vec![],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        let (Response::Profile(got), _) = e.apply(
+            Request::GetProfile {
+                name: "solo".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the imported profile");
+        };
+        assert_eq!(got.linked_app.as_deref(), Some("editor"));
+    }
+
+    /// Bind keys get set_bind's boundary treatment: an unknown key name rejects
+    /// the whole import (atomically), valid names import intact.
+    #[test]
+    fn import_validates_bind_key_names() {
+        let mut e = Engine::new(cfg(vec![], vec![]));
+        let mut bad = Profile::new("fresh");
+        bad.hypershift
+            .insert("KEY_BOGUS".into(), BindAction::Disable);
+        let (resp, _) = e.apply(
+            Request::ImportProfile {
+                profile: bad,
+                macros: vec![],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        let Response::Error { message } = resp else {
+            panic!("an unknown bind key must reject the import");
+        };
+        assert!(message.contains("KEY_BOGUS"));
+        assert!(
+            matches!(
+                e.apply(
+                    Request::GetProfile {
+                        name: "fresh".into()
+                    },
+                    "v"
+                )
+                .0,
+                Response::Error { .. }
+            ),
+            "rejected import must not insert the profile"
+        );
+
+        let mut good = Profile::new("fresh");
+        good.base.insert("KEY_A".into(), key_action(&["KEY_F5"]));
+        assert_eq!(
+            e.apply(
+                Request::ImportProfile {
+                    profile: good,
+                    macros: vec![],
+                    rename: None,
+                    overwrite: false,
+                },
+                "v",
+            )
+            .0,
+            Response::Ack
+        );
+        let (Response::Profile(got), _) = e.apply(
+            Request::GetProfile {
+                name: "fresh".into(),
+            },
+            "v",
+        ) else {
+            panic!("expected the imported profile");
+        };
+        assert!(got.base.contains_key("KEY_A"));
     }
 }

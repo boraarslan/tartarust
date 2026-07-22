@@ -86,7 +86,6 @@ fn dirties(request: &Request) -> bool {
             | DeleteMacro { .. }
             | SetAutoSwitch { .. }
             | SetActuation { .. }
-            | ImportProfile { .. }
     )
 }
 
@@ -467,8 +466,16 @@ pub async fn export_profile_bundle(
             mark_online(store);
             Ok(bundle)
         }
-        Ok(Response::Error { message }) => Err(message),
-        Ok(other) => Err(format!("unexpected daemon reply: {other:?}")),
+        // A decoded reply — even a rejection — proves the daemon is reachable;
+        // clear a stale offline flag like every other helper does.
+        Ok(Response::Error { message }) => {
+            mark_online(store);
+            Err(message)
+        }
+        Ok(other) => {
+            mark_online(store);
+            Err(format!("unexpected daemon reply: {other:?}"))
+        }
         Err(e) => {
             mark_offline(store, &e);
             Err("daemon unreachable".into())
@@ -509,8 +516,12 @@ pub async fn import_profile_entries(
                 break;
             }
             Err(e) => {
+                // Break, not return: profiles already imported this loop are
+                // live in the daemon, so the unsaved flag + resync below must
+                // still run (resync itself no-ops while unreachable).
                 mark_offline(store, &e);
-                return Err("daemon unreachable — import aborted".into());
+                failure = Some("daemon unreachable — import aborted".into());
+                break;
             }
         }
     }

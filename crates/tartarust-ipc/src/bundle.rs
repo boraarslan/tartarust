@@ -37,10 +37,33 @@ pub fn to_toml(bundle: &ProfileExport) -> Result<String, String> {
     toml::to_string_pretty(bundle).map_err(|e| format!("encoding profile bundle: {e}"))
 }
 
+/// The bare bundle envelope, parseable from ANY valid TOML table. Probing this
+/// first lets a malformed or newer-than-this-build bundle report its own error
+/// (and fire the version gate) instead of falling through to a misleading
+/// config-parse failure.
+#[derive(serde::Deserialize)]
+struct Envelope {
+    format: Option<String>,
+    #[serde(default)]
+    version: Option<u32>,
+}
+
 /// Classify + parse import-file text. Export bundles are recognized by their
 /// `format` envelope; anything else must look like a config with profiles.
 pub fn parse(text: &str) -> Result<ImportSource, String> {
-    if let Ok(bundle) = toml::from_str::<ProfileExport>(text) {
+    let envelope: Envelope = toml::from_str(text).map_err(|e| format!("invalid TOML: {e}"))?;
+    if let Some(format) = envelope.format {
+        // A `format` key means the file claims to be a bundle: gate on the
+        // envelope FIRST (a newer build's bundle may not deserialize at all),
+        // then surface the real parse error rather than the config fallback's.
+        ProfileExport::check_envelope(
+            &format,
+            envelope
+                .version
+                .unwrap_or(crate::model::PROFILE_EXPORT_VERSION),
+        )?;
+        let bundle: ProfileExport =
+            toml::from_str(text).map_err(|e| format!("invalid profile bundle: {e}"))?;
         bundle.validate()?;
         return Ok(ImportSource::Bundle(bundle));
     }
@@ -60,7 +83,15 @@ pub fn parse(text: &str) -> Result<ImportSource, String> {
         profile.name = key;
         let macros = referenced_macro_names(&profile)
             .iter()
-            .filter_map(|n| config.macros.get(n).cloned())
+            .filter_map(|n| {
+                // Same rule for macros: binds reference the map key, so the
+                // bundled macro must carry it — a mismatched inline `name`
+                // would import as a dangling reference.
+                config.macros.get(n).cloned().map(|mut m| {
+                    m.name = n.clone();
+                    m
+                })
+            })
             .collect();
         entries.push((profile, macros));
     }
@@ -101,13 +132,41 @@ mod tests {
         assert_eq!(back, bundle);
     }
 
-    /// A bundle from a NEWER build is refused rather than half-understood.
+    /// A bundle from a NEWER build is refused rather than half-understood —
+    /// even when its body no longer deserializes as this build's shape, the
+    /// envelope probe must fire the version gate first.
     #[test]
     fn future_bundle_version_is_rejected() {
         let mut bundle = ProfileExport::new(Profile::new("x"), vec![]);
         bundle.version += 1;
         let text = to_toml(&bundle).unwrap();
         assert!(parse(&text).unwrap_err().contains("newer"));
+
+        // Same gate with a body this build cannot even parse.
+        let alien = format!(
+            "format = \"tartarust-profile\"\nversion = {}\n[profile]\nname = \"x\"\n[[profile.widgets]]\nkind = \"from-the-future\"\n",
+            crate::model::PROFILE_EXPORT_VERSION + 1
+        );
+        assert!(parse(&alien).unwrap_err().contains("newer"));
+    }
+
+    /// A file claiming to be a bundle gets the BUNDLE parse error on a bad
+    /// body — not the config fallback's misleading complaint.
+    #[test]
+    fn malformed_bundle_reports_a_bundle_error() {
+        let text = r#"
+format = "tartarust-profile"
+version = 1
+[profile]
+name = "x"
+[profile.base.KEY_A]
+step = "not-a-bind-action"
+"#;
+        let err = parse(text).unwrap_err();
+        assert!(
+            err.contains("invalid profile bundle"),
+            "want the bundle parse error, got: {err}"
+        );
     }
 
     /// A full config file (tartarust or old rusty-tartarus) imports as one
@@ -129,7 +188,7 @@ name = "used"
 name = "b"
 
 [macros.used]
-name = "used"
+name = "stale-macro-name"
 [[macros.used.steps]]
 step = "delay"
 ms = 5
@@ -143,6 +202,8 @@ steps = []
         };
         let names: Vec<_> = entries.iter().map(|(p, _)| p.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"], "table key wins over inline name");
+        // The macro's stale inline name is normalized to its map key too —
+        // that key is what the bind references.
         assert_eq!(
             entries[0]
                 .1

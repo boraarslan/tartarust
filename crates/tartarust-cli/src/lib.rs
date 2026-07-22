@@ -256,10 +256,11 @@ async fn export_profile(socket: &Path, name: String, output: Option<PathBuf>) ->
             }
             Ok(())
         }
-        other => {
-            print_response(other); // exits non-zero on Error
-            Ok(())
+        Response::Error { message } => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
         }
+        other => bail!("unexpected daemon reply: {other:?} — daemon/CLI version mismatch?"),
     }
 }
 
@@ -287,6 +288,12 @@ async fn import_profiles(
             entries
         }
     };
+    // Don't stop at a rejection: with a multi-profile config file, later
+    // profiles may import fine — and whatever DID land is live in the daemon,
+    // so the save step below must still run or the successes would silently
+    // evaporate on the next daemon restart.
+    let mut imported = 0usize;
+    let mut failures = Vec::new();
     for (profile, macros) in entries {
         let shown = rename.clone().unwrap_or_else(|| profile.name.clone());
         let macro_count = macros.len();
@@ -302,19 +309,32 @@ async fn import_profiles(
         .await?
         {
             Response::Error { message } => {
-                bail!("importing `{shown}`: {message}");
+                eprintln!("error: importing `{shown}`: {message}");
+                failures.push(shown);
             }
-            _ => println!("imported profile `{shown}` ({macro_count} macro(s))"),
+            _ => {
+                println!("imported profile `{shown}` ({macro_count} macro(s))");
+                imported += 1;
+            }
         }
     }
     if no_save {
         println!("session-only (--no-save): save from the UI or re-run without --no-save to keep");
-    } else if let Response::Error { message } =
-        send(socket, &Request::SaveProfile { name: None }).await?
-    {
-        bail!("import applied but saving the config failed: {message}");
-    } else {
+    } else if imported > 0 {
+        if let Response::Error { message } =
+            send(socket, &Request::SaveProfile { name: None }).await?
+        {
+            bail!("import applied but saving the config failed: {message}");
+        }
         println!("saved to the daemon's config");
+    }
+    if !failures.is_empty() {
+        bail!(
+            "{} of {} profile(s) failed to import: {}",
+            failures.len(),
+            failures.len() + imported,
+            failures.join(", ")
+        );
     }
     Ok(())
 }
