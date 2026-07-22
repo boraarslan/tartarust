@@ -9,6 +9,14 @@ description = "Shared request/response schema between the daemon and its clients
 
 [dependencies]
 serde = { workspace = true }
+# Only for the opt-in `bundle` feature (profile export/import file I/O); the
+# default crate stays serde-only.
+toml = { version = "0.8", optional = true }
+
+[features]
+# TOML encode/parse for portable profile bundles + config-file imports (the
+# shared logic behind `tartarust profile export/import` and the UI's flow).
+bundle = ["dep:toml"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -802,3 +802,66 @@ pub fn unique_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
         .find(|n| !taken(n))
         .unwrap_or_else(|| base.to_string())
 }
+
+/// Expand a leading `~/` (or bare `~`) to `$HOME`. The export/import dialogs
+/// take typed paths, and `~` is how people write them; everything else passes
+/// through untouched. With no `$HOME` the path is returned as-is.
+pub fn expand_tilde(path: &str) -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        if path == "~" {
+            return std::path::PathBuf::from(home);
+        }
+        if let Some(rest) = path.strip_prefix("~/") {
+            return std::path::Path::new(&home).join(rest);
+        }
+    }
+    std::path::PathBuf::from(path)
+}
+
+/// The suggested destination for exporting `profile_name`:
+/// `~/{name}.tartarust.toml`, with `/` (a path separator) made safe. Spaces
+/// are legal in filenames and profile names commonly have them — kept.
+pub fn default_export_path(profile_name: &str) -> String {
+    let safe = profile_name.replace('/', "-");
+    let stem = safe.trim();
+    if stem.is_empty() {
+        "~/profile.tartarust.toml".to_string()
+    } else {
+        format!("~/{stem}.tartarust.toml")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_expands_home_prefix_only() {
+        // The suite runs with $HOME set (dev shells / CI both have it).
+        let home = std::env::var("HOME").expect("tests need $HOME");
+        assert_eq!(expand_tilde("~"), std::path::PathBuf::from(&home));
+        assert_eq!(
+            expand_tilde("~/x/y.toml"),
+            std::path::Path::new(&home).join("x/y.toml")
+        );
+        // No expansion mid-path or for other prefixes.
+        assert_eq!(
+            expand_tilde("/tmp/~/x.toml"),
+            std::path::PathBuf::from("/tmp/~/x.toml")
+        );
+        assert_eq!(
+            expand_tilde("~user/x.toml"),
+            std::path::PathBuf::from("~user/x.toml")
+        );
+    }
+
+    #[test]
+    fn default_export_path_is_home_relative_and_separator_safe() {
+        assert_eq!(
+            default_export_path("MMO Grind"),
+            "~/MMO Grind.tartarust.toml"
+        );
+        assert_eq!(default_export_path("a/b"), "~/a-b.tartarust.toml");
+        assert_eq!(default_export_path("  "), "~/profile.tartarust.toml");
+    }
+}

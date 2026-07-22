@@ -10,14 +10,12 @@ description = "Command-line client for the Tartarus Pro daemon (scriptable contr
 # (a thin shim over `main`) so one `cargo install` ships all bins.
 
 [dependencies]
-tartarust-ipc = { workspace = true }
-serde = { workspace = true }
+# `bundle` = the shared profile export/import file logic (TOML encode + parse).
+tartarust-ipc = { workspace = true, features = ["bundle"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-# Profile bundles / config files are TOML (same version the daemon pins).
-toml = "0.8"
 
 [lints]
 workspace = true

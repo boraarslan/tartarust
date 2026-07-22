@@ -32,6 +32,19 @@ pub fn Profiles() -> Element {
     // Which row's kebab menu / inline link input is open (one at a time).
     let mut menu_open = use_signal::<Option<usize>>(|| None);
     let mut link_editing = use_signal::<Option<usize>>(|| None);
+
+    // Export/import dialog state. `export_for` holds the profile being exported
+    // (`None` = closed); the import dialog is a plain open flag. One shared
+    // busy/error pair — the two dialogs are mutually exclusive — plus a
+    // toolbar success note that survives the dialog closing.
+    let mut export_for = use_signal::<Option<String>>(|| None);
+    let mut export_path = use_signal(String::new);
+    let mut import_open = use_signal(|| false);
+    let mut import_path = use_signal(String::new);
+    let mut import_overwrite = use_signal(|| false);
+    let mut io_busy = use_signal(|| false);
+    let mut io_error = use_signal::<Option<String>>(|| None);
+    let mut io_note = use_signal::<Option<String>>(|| None);
     // Which row is being renamed — drives the debounced-rename FREEZE below and
     // the visual edit state.
     let mut editing = use_signal::<Option<usize>>(|| None);
@@ -84,9 +97,28 @@ pub fn Profiles() -> Element {
             if offline {
                 span { class: "li-meta", "Daemon offline — last-known state shown." }
             }
+            if let Some(note) = io_note() {
+                span { class: "li-meta", "{note}" }
+            }
+            // Import needs a reachable daemon; the button hides offline (same
+            // rule as the shell's Save affordance).
+            if !offline {
+                button {
+                    class: "btn",
+                    style: "margin-left:auto;",
+                    onclick: move |_| {
+                        io_note.set(None);
+                        io_error.set(None);
+                        import_path.set(String::new());
+                        import_overwrite.set(false);
+                        import_open.set(true);
+                    },
+                    "Import…"
+                }
+            }
             button {
                 class: "btn primary",
-                style: "margin-left:auto;",
+                style: if offline { "margin-left:auto;" } else { "" },
                 onclick: move |_| {
                     // Optimistic local push + persist (the daemon makes the profile).
                     // De-dupe the name so every daemon op (which addresses BY NAME)
@@ -125,6 +157,7 @@ pub fn Profiles() -> Element {
                     let name_link_set = name.clone();
                     let name_link_clear = name.clone();
                     let name_dup = name.clone();
+                    let name_export = name.clone();
 
                     rsx! {
                         div { class: row_class,
@@ -323,6 +356,22 @@ pub fn Profiles() -> Element {
                                             },
                                             "Duplicate"
                                         }
+                                        // Export: opens the destination dialog
+                                        // (the bundle itself comes from the
+                                        // daemon, so the item hides offline).
+                                        if !offline {
+                                            button {
+                                                class: "menu-item",
+                                                onclick: move |_| {
+                                                    menu_open.set(None);
+                                                    io_note.set(None);
+                                                    io_error.set(None);
+                                                    export_path.set(crate::model::default_export_path(&name_export));
+                                                    export_for.set(Some(name_export.clone()));
+                                                },
+                                                "Export…"
+                                            }
+                                        }
                                         // Rename: focus the inline name input. Setting
                                         // `editing` is the load-bearing part (freeze +
                                         // visual state); the DOM focus is a nicety.
@@ -369,7 +418,192 @@ pub fn Profiles() -> Element {
                 }
             }
         }
+
+        // ── Export dialog ─────────────────────────────────────────────────────
+        if let Some(exp_name) = export_for() {
+            {
+                let exp_confirm = exp_name.clone();
+                rsx! {
+                    div {
+                        class: "overlay",
+                        onclick: move |_| {
+                            if !io_busy() {
+                                export_for.set(None);
+                                io_error.set(None);
+                            }
+                        },
+                        div {
+                            class: "dialog",
+                            onclick: move |e| e.stop_propagation(),
+                            div { class: "dialog-title", "Export profile" }
+                            div { class: "dialog-sub",
+                                "Writes “{exp_name}” — with the macros it references — as a portable TOML bundle. Import it on any machine."
+                            }
+                            input {
+                                class: "text-input",
+                                autofocus: true,
+                                value: "{export_path}",
+                                oninput: move |e| export_path.set(e.value()),
+                            }
+                            if let Some(err) = io_error() {
+                                div { class: "dialog-error", "{err}" }
+                            }
+                            div { class: "dialog-actions",
+                                button {
+                                    class: "btn",
+                                    onclick: move |_| {
+                                        export_for.set(None);
+                                        io_error.set(None);
+                                    },
+                                    "Cancel"
+                                }
+                                button {
+                                    class: "btn primary",
+                                    onclick: move |_| {
+                                        if io_busy() {
+                                            return;
+                                        }
+                                        io_busy.set(true);
+                                        io_error.set(None);
+                                        let name = exp_confirm.clone();
+                                        let path = export_path();
+                                        spawn(async move {
+                                            match do_export(store, name, path).await {
+                                                Ok(msg) => {
+                                                    io_note.set(Some(msg));
+                                                    export_for.set(None);
+                                                }
+                                                Err(e) => io_error.set(Some(e)),
+                                            }
+                                            io_busy.set(false);
+                                        });
+                                    },
+                                    if io_busy() { "Exporting…" } else { "Export" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Import dialog ─────────────────────────────────────────────────────
+        if import_open() {
+            div {
+                class: "overlay",
+                onclick: move |_| {
+                    if !io_busy() {
+                        import_open.set(false);
+                        io_error.set(None);
+                    }
+                },
+                div {
+                    class: "dialog",
+                    onclick: move |e| e.stop_propagation(),
+                    div { class: "dialog-title", "Import profiles" }
+                    div { class: "dialog-sub",
+                        "Path to an exported profile bundle — or a full config.toml (e.g. ~/.config/rusty-tartarus/config.toml), which imports every profile in it. Imports apply live and persist when you press Save."
+                    }
+                    input {
+                        class: "text-input",
+                        autofocus: true,
+                        placeholder: "~/profile.tartarust.toml",
+                        value: "{import_path}",
+                        oninput: move |e| import_path.set(e.value()),
+                    }
+                    crate::components::Toggle {
+                        label: "Overwrite existing profiles/macros",
+                        on: import_overwrite(),
+                        on_toggle: move |_| {
+                            let next = !import_overwrite();
+                            import_overwrite.set(next);
+                        },
+                    }
+                    if let Some(err) = io_error() {
+                        div { class: "dialog-error", "{err}" }
+                    }
+                    div { class: "dialog-actions",
+                        button {
+                            class: "btn",
+                            onclick: move |_| {
+                                import_open.set(false);
+                                io_error.set(None);
+                            },
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn primary",
+                            onclick: move |_| {
+                                if io_busy() {
+                                    return;
+                                }
+                                io_busy.set(true);
+                                io_error.set(None);
+                                let path = import_path();
+                                let overwrite = import_overwrite();
+                                spawn(async move {
+                                    match do_import(store, path, overwrite).await {
+                                        Ok(msg) => {
+                                            io_note.set(Some(msg));
+                                            import_open.set(false);
+                                        }
+                                        Err(e) => io_error.set(Some(e)),
+                                    }
+                                    io_busy.set(false);
+                                });
+                            },
+                            if io_busy() { "Importing…" } else { "Import" }
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Fetch the bundle from the daemon and write it where the dialog says. The
+/// small sync file write is fine on this task (same as desktop.rs's installs).
+async fn do_export(
+    store: Signal<crate::model::AppState>,
+    name: String,
+    path_raw: String,
+) -> Result<String, String> {
+    let trimmed = path_raw.trim();
+    if trimmed.is_empty() {
+        return Err("enter a destination path".into());
+    }
+    let bundle = crate::ipc::export_profile_bundle(store, name.clone()).await?;
+    let toml = tartarust_ipc::bundle::to_toml(&bundle)?;
+    let path = crate::model::expand_tilde(trimmed);
+    std::fs::write(&path, &toml).map_err(|e| format!("writing {}: {e}", path.display()))?;
+    Ok(format!(
+        "Exported “{name}” ({} macro(s)) to {}",
+        bundle.macros.len(),
+        path.display()
+    ))
+}
+
+/// Read + classify the file (export bundle or full config), push the profile(s)
+/// to the daemon, and resync. Session-live until the user presses Save —
+/// the same defer-all convention as every other edit in the UI.
+async fn do_import(
+    store: Signal<crate::model::AppState>,
+    path_raw: String,
+    overwrite: bool,
+) -> Result<String, String> {
+    let trimmed = path_raw.trim();
+    if trimmed.is_empty() {
+        return Err("enter a file path".into());
+    }
+    let path = crate::model::expand_tilde(trimmed);
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    let entries = match tartarust_ipc::bundle::parse(&text)? {
+        tartarust_ipc::bundle::ImportSource::Bundle(b) => vec![(b.profile, b.macros)],
+        tartarust_ipc::bundle::ImportSource::Config(entries) => entries,
+    };
+    let n = crate::ipc::import_profile_entries(store, entries, overwrite).await?;
+    Ok(format!("Imported {n} profile(s) — press Save to keep"))
 }
 
 /// Optimistically flip auto-switch ON and push to the daemon. Called when a

@@ -21,7 +21,8 @@ socket.
 - **Chroma lighting** — brightness + effects (static / breathing / spectrum /
   wave / reactive / starlight) and per-key custom frames.
 - **Profiles** — multiple software profiles with optional per-application
-  auto-switching (the Pro has no onboard profile memory).
+  auto-switching (the Pro has no onboard profile memory), plus portable
+  export/import (CLI or UI) for moving profiles between machines.
 - **Macros** — recorded key/button/delay sequences.
 - **Analog actuation** — adjustable actuation points / dual-step *(gated: the
   config protocol is undocumented; see [`docs/research/03-analog-actuation.md`](docs/research/03-analog-actuation.md))*.

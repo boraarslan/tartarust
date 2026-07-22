@@ -18,6 +18,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+#[cfg(feature = "bundle")]
+pub mod bundle;
 pub mod model;
 
 pub use model::{
