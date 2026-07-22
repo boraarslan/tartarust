@@ -2,6 +2,10 @@
 //! masthead (nameplate + link readout + profile/save), tab rail, content
 //! outlet, and a bottom status strip with the persistent readouts.
 
+use std::time::{Duration, Instant};
+
+use dioxus::desktop::use_window;
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::Route;
@@ -64,10 +68,49 @@ pub fn Shell() -> Element {
     let unsaved = s.unsaved;
     drop(s);
 
+    // The window has no OS decorations (`with_decorations(false)`): the
+    // masthead IS the titlebar. Its background starts an OS move-drag; a quick
+    // second press toggles maximize. We time presses ourselves instead of
+    // relying on `ondoubleclick` because the first press hands the pointer to
+    // the compositor's move loop, which may swallow the dblclick synthesis.
+    let window = use_window();
+    let mut last_down: Signal<Option<Instant>> = use_signal(|| None);
+    let on_masthead_down = {
+        let window = window.clone();
+        move |e: Event<MouseData>| {
+            if e.data().trigger_button() != Some(MouseButton::Primary) {
+                return;
+            }
+            let now = Instant::now();
+            let prev = last_down.peek().clone();
+            last_down.set(Some(now));
+            match prev {
+                Some(t) if now.duration_since(t) < Duration::from_millis(400) => {
+                    window.toggle_maximized();
+                }
+                _ => window.drag(),
+            }
+        }
+    };
+    let win_min = {
+        let window = window.clone();
+        move |_| window.window.set_minimized(true)
+    };
+    let win_max = {
+        let window = window.clone();
+        move |_| window.toggle_maximized()
+    };
+    let win_close = {
+        let window = window.clone();
+        move |_| window.close()
+    };
+
     rsx! {
         div { class: "app",
-            // Masthead: nameplate, link annunciator, profile + save.
+            // Masthead: nameplate, link annunciator, profile + save — and,
+            // decorations being off, the drag region + window controls.
             header { class: "masthead",
+                onmousedown: on_masthead_down,
                 div { class: "brand",
                     div { class: "brand-mark" }
                     div {
@@ -90,6 +133,9 @@ pub fn Shell() -> Element {
                     }
                 }
                 div { class: "profile-select",
+                    // Keep presses on the picker/save cluster from bubbling to
+                    // the masthead's drag handler.
+                    onmousedown: move |e| e.stop_propagation(),
                     "Profile"
                     select {
                         onchange: move |e| {
@@ -119,6 +165,14 @@ pub fn Shell() -> Element {
                             "Save"
                         }
                     }
+                }
+                // Window controls (min / max / close): the machined stand-ins
+                // for the OS titlebar buttons.
+                div { class: "winctl",
+                    onmousedown: move |e| e.stop_propagation(),
+                    button { class: "wbtn", title: "Minimize", onclick: win_min, "–" }
+                    button { class: "wbtn", title: "Maximize / restore", onclick: win_max, "□" }
+                    button { class: "wbtn close", title: "Close", onclick: win_close, "✕" }
                 }
             }
 

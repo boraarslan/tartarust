@@ -85,14 +85,16 @@ a:focus-visible, [tabindex]:focus-visible {
   background: var(--chassis);
 }
 
-/* Masthead: the instrument's nameplate row. */
+/* Masthead: the instrument's nameplate row. Decorations are off, so this is
+   also the titlebar: drag region + window controls (see Shell). */
 .masthead {
   flex: none;
   display: flex; align-items: center; gap: 18px;
   height: 54px;
-  padding: 0 26px;
+  padding: 0 14px 0 26px;
   border-bottom: 1px solid var(--line-soft);
   background: #171512;
+  -webkit-user-select: none; user-select: none;
 }
 .brand { display: flex; align-items: center; gap: 11px; }
 .brand-mark {
@@ -162,6 +164,22 @@ a:focus-visible, [tabindex]:focus-visible {
   background-repeat: no-repeat;
 }
 .profile-select .save-profile { padding: 5px 12px; font-size: 11.5px; }
+
+/* Window controls: machined CSD buttons standing in for the OS titlebar.
+   Quiet until hovered; close earns the red wash (destructive). */
+.winctl { display: flex; align-items: center; gap: 2px; margin-left: 2px; }
+.wbtn {
+  width: 32px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none; border-radius: var(--radius-sm);
+  color: var(--mute);
+  font-family: var(--mono); font-size: 12px; line-height: 1;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.wbtn:hover { background: var(--panel-2); color: var(--ink); }
+.wbtn.close:hover { background: var(--red-wash); color: var(--red); }
 
 /* Tab rail: the faceplate's section switches. */
 .tab-rail {

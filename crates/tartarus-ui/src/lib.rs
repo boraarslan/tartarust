@@ -64,8 +64,12 @@ pub fn run_app() {
 
     // No `dx` here: we run a plain cargo binary under cage. Configure the wry
     // window directly and strip the default GTK menubar (`with_menu(None)`).
+    // Decorations are off: the masthead doubles as the titlebar (drag +
+    // window controls live in `Shell`); tao still hit-tests the borders of
+    // undecorated windows so edge-resize keeps working.
     let window = WindowBuilder::new()
         .with_title("rusty-tartarus")
+        .with_decorations(false)
         .with_inner_size(LogicalSize::new(1280.0, 800.0));
 
     let config = Config::new()
