@@ -204,26 +204,26 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
             // `out_tx` to an engine thread, so the output thread's channel closes
             // when `output` drops and its join completes.
             let nodes = input::discover_required()?;
-            // Grab ONLY the keyboard node(s). The engine remaps key events and
-            // nothing else, so the keyboard node is the only one whose events we
-            // consume. Grabbing the Pointer node would suppress the thumbpad's
-            // mouse movement/scroll, and grabbing the Other (consumer-control)
-            // node would swallow its keys (volume etc.) — both with no benefit,
-            // since neither is read. Leaving them ungrabbed lets those events
-            // reach the OS normally. We grab the narrowest surface that does the
-            // job, and `input::grab` re-verifies the USB id is exactly the
-            // Tartarus Pro right before EVIOCGRAB (defense in depth).
-            // The Tartarus exposes TWO keyboard interfaces: a 6-key BOOT keyboard
-            // (interface 0, 6-key rollover) and the real 22-slot array keyboard
-            // (interface 1, full N-key rollover). Reading the boot node caps
-            // simultaneous presses at 6 AND double-emits keys that also surface on
-            // interface 1. So when a CONFIRMED NKRO node is present, skip the boot
-            // node and read only the NKRO one. If no confirmed non-boot keyboard
-            // node can be found (sysfs unreadable / unexpected topology), fall back
-            // to grabbing whatever keyboard node exists and warn that rollover may
-            // be capped. The selection is factored into `input::plan_grabs` (pure +
-            // unit-tested with hand-built `(kind, interface)` tuples); here we only
-            // consume its index-aligned decision over the owned nodes.
+            // Grab ONLY keyboard nodes — but ALL of them. The Tartarus exposes
+            // TWO keyboard interfaces and the firmware SPLITS the keys across
+            // them: the 20-key grid arrives on the N-key-rollover keyboard
+            // (interface 1) while the entire thumb cluster — 8-way pad arrows
+            // and the thumb button's modifier bit — arrives ONLY on the 6KRO
+            // boot keyboard (interface 0). Verified by passive capture on
+            // fw v1.02 (2026-07-23); see `input::plan_grabs` for the full
+            // rationale. Earlier revisions skipped the boot node assuming it
+            // merely double-emitted interface 1's keys — which silently killed
+            // every thumb-area remap and leaked those keys past the grab to
+            // the focused window.
+            // Pointer/Other stay ungrabbed: grabbing the Pointer node would
+            // suppress the thumbpad's mouse movement/scroll, and grabbing the
+            // Other (consumer-control) node would swallow its keys (volume
+            // etc.) — both with no benefit, since neither is read.
+            // `input::grab` re-verifies the USB id is exactly the Tartarus Pro
+            // right before EVIOCGRAB (defense in depth). The selection lives in
+            // `input::plan_grabs` (pure + unit-tested with hand-built
+            // `(kind, interface)` tuples); here we only consume its
+            // index-aligned decision over the owned nodes.
             let plan = input::plan_grabs(
                 &nodes
                     .iter()
@@ -251,14 +251,13 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
                     );
                     continue;
                 }
-                // Skip the 6KRO boot keyboard when the NKRO keyboard is available
-                // (the plan already decided this; a keyboard node not marked for
-                // grab is the skipped boot node).
+                // `plan_grabs` grabs every keyboard node, so this cannot fire
+                // today; it guards against the plan and this loop ever
+                // disagreeing about the node list.
                 if !do_grab {
-                    tracing::info!(
+                    tracing::warn!(
                         path = %node.path.display(),
-                        "skipping the 6KRO boot keyboard node (interface 0); reading \
-                         the N-key-rollover keyboard (interface 1) instead",
+                        "grab plan declined a keyboard node; skipping it",
                     );
                     continue;
                 }

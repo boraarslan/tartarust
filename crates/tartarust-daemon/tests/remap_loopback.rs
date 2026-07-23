@@ -748,3 +748,190 @@ fn drop_set_filters_claimed_key_but_passes_unclaimed() {
     drop(sink_reader);
     std::mem::forget(source);
 }
+
+/// Regression repro (field report, post review-sweep): the thumb button
+/// (`KEY_LEFTALT`) remapped to `KEY_ESC` in the BASE layer of a profile with
+/// `thumb_axis_mode = four` reportedly emits nothing. Mirrors the reporting
+/// user's config shape exactly; taps twice to also catch held-state poisoning
+/// (a first press that never releases would swallow every later press).
+#[test]
+fn thumb_alt_base_remap_in_four_way_mode() {
+    if !uinput_available() {
+        eprintln!("SKIPPED thumb_alt_base_remap: /dev/uinput not writable here");
+        return;
+    }
+    eprintln!("RAN thumb_alt_base_remap: /dev/uinput available");
+
+    let mut p = Profile::new("Default");
+    p.thumb_axis_mode = tartarust_ipc::model::ThumbAxisMode::Four;
+    p.base.insert(
+        "KEY_LEFTALT".into(),
+        BindAction::Key {
+            keys: vec!["KEY_ESC".into()],
+        },
+    );
+    let mut profiles = std::collections::BTreeMap::new();
+    profiles.insert("Default".into(), p);
+    let config = Config {
+        default_profile: "Default".into(),
+        auto_switch: false,
+        tray: true,
+        input_mode: InputMode::Digital,
+        analog: AnalogConfig::default(),
+        profiles,
+        macros: std::collections::BTreeMap::new(),
+    };
+
+    let mut source = build_source();
+    let source_path = node_path(&mut source);
+    let out = output::spawn().expect("output sink");
+    let out_tx = out.sender();
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
+    std::mem::forget(out);
+
+    let mut sink_reader = open_with_retry(&sink_path);
+    sink_reader.grab().expect("grab sink");
+    sink_reader
+        .set_nonblocking(true)
+        .expect("set sink non-blocking");
+
+    drop(open_with_retry(&source_path));
+    let mut node = input::open_node(&source_path).expect("open source node");
+    input::grab_unchecked(&mut node).expect("grab source");
+
+    let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
+    let device = tartarust_daemon::device::spawn();
+    let _reader = pipeline::spawn_reader(node, engine_tx, Arc::new(RwLock::new(HashSet::new())));
+    let engine = Engine::new(config);
+    let _engine = pipeline::spawn_engine(
+        engine,
+        engine_rx,
+        out_tx,
+        device,
+        std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
+        DAEMON_VERSION,
+    );
+    std::thread::sleep(Duration::from_millis(150));
+
+    tap(&mut source, KeyCode::KEY_LEFTALT);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_ESC.0, 1), (KeyCode::KEY_ESC.0, 0)],
+        "first thumb-button tap must emit ESC down/up"
+    );
+
+    tap(&mut source, KeyCode::KEY_LEFTALT);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_ESC.0, 1), (KeyCode::KEY_ESC.0, 0)],
+        "second thumb-button tap must emit ESC down/up (held-state must clear)"
+    );
+
+    drop(sink_reader);
+    std::mem::forget(source);
+}
+
+/// The split-topology regression: real firmware delivers the grid on the NKRO
+/// node and the ENTIRE thumb cluster on the boot node (field capture,
+/// fw v1.02). The daemon must therefore read BOTH keyboard nodes into one
+/// engine. Two synthetic sources model the two nodes: KEY_A ("grid") on
+/// source 1, KEY_LEFTALT ("thumb button") on source 2 — both must remap.
+#[test]
+fn two_source_nodes_feed_one_engine() {
+    if !uinput_available() {
+        eprintln!("SKIPPED two_source_nodes: /dev/uinput not writable here");
+        return;
+    }
+    eprintln!("RAN two_source_nodes: /dev/uinput available");
+
+    let mut p = Profile::new("default");
+    p.base.insert(
+        "KEY_A".into(),
+        BindAction::Key {
+            keys: vec!["KEY_B".into()],
+        },
+    );
+    p.base.insert(
+        "KEY_LEFTALT".into(),
+        BindAction::Key {
+            keys: vec!["KEY_ESC".into()],
+        },
+    );
+    let mut profiles = std::collections::BTreeMap::new();
+    profiles.insert("default".into(), p);
+    let config = Config {
+        default_profile: "default".into(),
+        auto_switch: false,
+        tray: true,
+        input_mode: InputMode::Digital,
+        analog: AnalogConfig::default(),
+        profiles,
+        macros: std::collections::BTreeMap::new(),
+    };
+
+    let mut grid_src = build_source();
+    let grid_path = node_path(&mut grid_src);
+    let mut thumb_src = build_source();
+    let thumb_path = node_path(&mut thumb_src);
+
+    let out = output::spawn().expect("output sink");
+    let out_tx = out.sender();
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
+    std::mem::forget(out);
+
+    let mut sink_reader = open_with_retry(&sink_path);
+    sink_reader.grab().expect("grab sink");
+    sink_reader
+        .set_nonblocking(true)
+        .expect("set sink non-blocking");
+
+    let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
+    let no_drop: Arc<RwLock<HashSet<u16>>> = Arc::new(RwLock::new(HashSet::new()));
+    for path in [&grid_path, &thumb_path] {
+        drop(open_with_retry(path));
+        let mut node = input::open_node(path).expect("open source node");
+        input::grab_unchecked(&mut node).expect("grab source");
+        pipeline::spawn_reader(node, engine_tx.clone(), no_drop.clone());
+    }
+    let device = tartarust_daemon::device::spawn();
+    let engine = Engine::new(config);
+    let _engine = pipeline::spawn_engine(
+        engine,
+        engine_rx,
+        out_tx,
+        device,
+        std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
+        DAEMON_VERSION,
+    );
+    std::thread::sleep(Duration::from_millis(150));
+
+    tap(&mut grid_src, KeyCode::KEY_A);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_B.0, 1), (KeyCode::KEY_B.0, 0)],
+        "grid-node KEY_A must remap to KEY_B"
+    );
+
+    tap(&mut thumb_src, KeyCode::KEY_LEFTALT);
+    let got = read_keys(&mut sink_reader, 2, Duration::from_secs(2));
+    assert_eq!(
+        got,
+        vec![(KeyCode::KEY_ESC.0, 1), (KeyCode::KEY_ESC.0, 0)],
+        "thumb-node KEY_LEFTALT must remap to KEY_ESC"
+    );
+
+    drop(sink_reader);
+    std::mem::forget(grid_src);
+    std::mem::forget(thumb_src);
+}

@@ -76,31 +76,32 @@ pub struct GrabPlan {
 ///
 /// Rules:
 /// - Only `Keyboard` nodes are ever grabbed; `Pointer`/`Other` pass through.
+/// - ALL keyboard nodes are grabbed — including the boot keyboard (interface 0)
+///   even when an NKRO node exists. A passive capture on real hardware
+///   (fw v1.02, 2026-07-23) proved the firmware SPLITS the keys across the two
+///   keyboard interfaces: the 20-key grid arrives on the NKRO keyboard
+///   (interface 1) while the entire thumb cluster — 8-way pad arrows and the
+///   thumb button's modifier bit — arrives ONLY on the boot keyboard. The old
+///   rule skipped the boot node ("it just double-emits interface 1"), which
+///   made every thumb-area key invisible to the engine (thumb remaps dead) and
+///   leaked them — with kernel autorepeat — past the grab to the focused
+///   window. Reading both is duplicate-safe: the engine ignores a press for an
+///   already-held key and a release for a non-held key, so a firmware state
+///   that really did double-emit would no-op.
 /// - A node counts as a *real* NKRO keyboard only if its interface RESOLVED to a
-///   non-boot number (`Some(i)`, `i != BOOT_INTERFACE`). A `None` interface
-///   (synthetic node or unreadable sysfs) is NOT treated as NKRO — that is the
-///   safe default that, in the degraded all-`None` case, grabs every keyboard
-///   node (including the boot node) AND warns that rollover may be capped.
-/// - When a real NKRO keyboard exists, the boot keyboard (interface 0) is skipped
-///   so presses aren't capped at 6 and keys aren't double-emitted across nodes.
+///   non-boot number (`Some(i)`, `i != BOOT_INTERFACE`); `None` (synthetic node
+///   or unreadable sysfs) is NOT treated as NKRO.
 /// - `warn_rollover` is set whenever a keyboard node will be grabbed but no real
-///   NKRO node was found.
+///   NKRO node was found (grid rollover may cap at 6).
 pub fn plan_grabs(nodes: &[(NodeKind, Option<u8>)]) -> GrabPlan {
-    // A *confirmed* NKRO keyboard: a keyboard whose interface resolved to a
-    // non-boot number. `None` does NOT qualify (unknown topology -> grab-all
-    // fallback + warn), which is both safer and the fix for the all-`None`
-    // case that previously suppressed the rollover warning.
     let have_real_nkro = nodes.iter().any(|&(kind, iface)| {
         kind == NodeKind::Keyboard && iface.is_some_and(|i| i != BOOT_INTERFACE)
     });
 
     let mut grab = Vec::with_capacity(nodes.len());
     let mut any_keyboard_grabbed = false;
-    for &(kind, iface) in nodes {
-        let is_keyboard = kind == NodeKind::Keyboard;
-        let is_boot = is_keyboard && iface == Some(BOOT_INTERFACE);
-        // Grab keyboard nodes only; skip the boot node when a real NKRO node is present.
-        let do_grab = is_keyboard && !(have_real_nkro && is_boot);
+    for &(kind, _iface) in nodes {
+        let do_grab = kind == NodeKind::Keyboard;
         if do_grab {
             any_keyboard_grabbed = true;
         }
@@ -352,11 +353,13 @@ mod tests {
     const KBD: NodeKind = NodeKind::Keyboard;
 
     #[test]
-    fn boot_and_nkro_present_grabs_nkro_only() {
-        // The real device topology: iface0 boot (6KRO) + iface1 NKRO. Grab the
-        // NKRO node, skip the boot node, no warning.
+    fn boot_and_nkro_present_grabs_both() {
+        // The real device topology: iface0 boot (6KRO) + iface1 NKRO. Grab
+        // BOTH: the grid rides the NKRO node but the thumb cluster rides ONLY
+        // the boot node (field capture, fw v1.02) — skipping boot kills thumb
+        // remaps and leaks the thumb keys to the focused window. No warning.
         let plan = plan_grabs(&[(KBD, Some(BOOT_INTERFACE)), (KBD, Some(NKRO_INTERFACE))]);
-        assert_eq!(plan.grab, vec![false, true]);
+        assert_eq!(plan.grab, vec![true, true]);
         assert!(!plan.warn_rollover);
     }
 
@@ -392,16 +395,16 @@ mod tests {
 
     #[test]
     fn nkro_present_leaves_pointer_and_other_ungrabbed() {
-        // A full node set: boot kbd, NKRO kbd, pointer, other. Only the NKRO
-        // keyboard is grabbed; the boot node is skipped and pointer/other pass
-        // through.
+        // A full node set: boot kbd, NKRO kbd, pointer, other. Both keyboards
+        // are grabbed (grid on NKRO, thumb cluster on boot); pointer/other pass
+        // through so thumbpad mouse movement and consumer keys reach the OS.
         let plan = plan_grabs(&[
             (KBD, Some(BOOT_INTERFACE)),
             (KBD, Some(NKRO_INTERFACE)),
             (NodeKind::Pointer, Some(2)),
             (NodeKind::Other, Some(3)),
         ]);
-        assert_eq!(plan.grab, vec![false, true, false, false]);
+        assert_eq!(plan.grab, vec![true, true, false, false]);
         assert!(!plan.warn_rollover);
     }
 
