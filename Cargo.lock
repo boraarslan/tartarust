@@ -4566,7 +4566,7 @@ checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
 name = "tartarust"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "tartarust-cli",
@@ -4576,7 +4576,7 @@ dependencies = [
 
 [[package]]
 name = "tartarust-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4587,7 +4587,7 @@ dependencies = [
 
 [[package]]
 name = "tartarust-daemon"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4607,7 +4607,7 @@ dependencies = [
 
 [[package]]
 name = "tartarust-hid"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "nix 0.31.3",
@@ -4619,7 +4619,7 @@ dependencies = [
 
 [[package]]
 name = "tartarust-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4628,7 +4628,7 @@ dependencies = [
 
 [[package]]
 name = "tartarust-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "deku",
  "thiserror 2.0.18",
@@ -4636,9 +4636,10 @@ dependencies = [
 
 [[package]]
 name = "tartarust-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "dioxus",
+ "png 0.18.1",
  "serde_json",
  "tartarust-ipc",
  "tokio",

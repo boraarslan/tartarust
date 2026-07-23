@@ -67,8 +67,11 @@ pub fn run_app() {
     // Decorations are off: the masthead doubles as the titlebar (drag +
     // window controls live in `Shell`); tao still hit-tests the borders of
     // undecorated windows so edge-resize keeps working.
+    // Window icon covers X11 taskbar/alt-tab; on Wayland compositors resolve
+    // the icon from the installed desktop entry instead (see `desktop`).
     let window = WindowBuilder::new()
         .with_title("tartarust")
+        .with_window_icon(desktop::window_icon())
         .with_decorations(false)
         .with_inner_size(LogicalSize::new(1280.0, 800.0));
 

@@ -25,7 +25,7 @@ default-members = [
 [workspace.package]
 # One version for the whole workspace: every crate sets `version.workspace = true`
 # so a single bump here moves the root package and all six member crates together.
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = ["bora.rs <bora.rs@pm.me>"]

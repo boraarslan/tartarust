@@ -13,6 +13,8 @@ description = "Dioxus desktop UI for the Tartarus Pro (Synapse-style, original d
 # `bundle` = the shared profile export/import file logic (TOML encode + parse).
 tartarust-ipc = { workspace = true, features = ["bundle"] }
 dioxus = { version = "0.7", features = ["desktop", "router"] }
+# Decodes the embedded window-icon raster (assets/tartarust-128.png).
+png = "0.18"
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

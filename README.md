@@ -141,7 +141,7 @@ Never run `dx serve` or the UI binary bare. See
 
 ## Versioning
 
-The whole workspace ships one version, currently **0.1.0**. It is defined once in
+The whole workspace ships one version, currently **0.1.1**. It is defined once in
 `[workspace.package]` in the root `Cargo.toml`; the root package and all six
 member crates inherit it via `version.workspace = true`. Bump that single field
 to move everything together. See [`CLAUDE.md`](CLAUDE.md) for the policy.
