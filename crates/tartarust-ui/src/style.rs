@@ -529,7 +529,6 @@ a:focus-visible, [tabindex]:focus-visible {
   width: calc(var(--kp-dir) * 1.5); height: calc(var(--kp-dir) * 1.5);
   border-radius: 50%; letter-spacing: 0.1em;
 }
-.thumb-button.pressed::after { border-radius: 50%; }
 /* The disc's label ellipsises so a bound value can't spill outside the circle. */
 .thumb-button .tb-label {
   max-width: calc(var(--kp-dir) * 1.5 - 12px);
@@ -967,12 +966,11 @@ a:focus-visible, [tabindex]:focus-visible {
 
 /* ----- Calibration: per-key pressure fill + floating modal ------------------ */
 /* Bottom-rising phosphor overlay, behind the legend (cf. .keycap.lit). The grid
-   cap, spacebar, and thumb caps all share the same fill so analog pressure reads
-   identically on every actuator. `--press` is the 0..100% height. */
+   caps and the spacebar — the only analog actuators (the thumbpad, wheel, and
+   thumb button are digital, with no pressure byte) — share the same fill so
+   analog pressure reads identically. `--press` is the 0..100% height. */
 .keycap.pressed::after,
-.spacebar.pressed::after,
-.thumb-dir.pressed::after,
-.thumb-button.pressed::after {
+.spacebar.pressed::after {
   content: "";
   position: absolute; left: 0; right: 0; bottom: 0;
   height: var(--press, 0%);

@@ -55,11 +55,56 @@ pub async fn send_on(socket: &std::path::Path, request: Request) -> Result<Respo
 /// Used to correct optimistic local edits after the daemon rejects one (so the
 /// UI can't silently diverge — review #2). No-op offline (load_state returns
 /// None and the last-known state stays).
+///
+/// The load takes several sequential round trips and the UI stays interactive
+/// underneath, so a wholesale `*s = live` at the end would erase anything the
+/// user did during that window — including an edit the daemon ACCEPTED after
+/// answering our `GetProfile`, the exact divergence resync exists to prevent.
+/// Two defenses: if the daemon-owned fields moved while the load was in
+/// flight, re-run it ONCE (bounded, so a spamming user can't livelock it) so
+/// the overlay includes those edits; and the final overlay always carries over
+/// the CURRENT transient view state (layer / selection / switch gate), never
+/// the entry snapshot's.
 async fn resync(mut store: dioxus::prelude::Signal<AppState>) {
     use dioxus::prelude::{ReadableExt, WritableExt};
-    let base = store.read().clone();
-    if let Some(live) = load_state(base).await {
-        store.with_mut(|s| *s = live);
+    for attempt in 0..2 {
+        let base = store.read().clone();
+        let Some(live) = load_state(base.clone()).await else {
+            return; // offline: keep the last-known state
+        };
+        // Did a concurrent local edit land while the load was in flight?
+        let raced = {
+            let s = store.read();
+            s.profile != base.profile
+                || s.macros != base.macros
+                || s.profiles != base.profiles
+                || s.status != base.status
+        };
+        if raced && attempt == 0 {
+            continue; // reload once more, with the edit now visible daemon-side
+        }
+        store.with_mut(|s| {
+            let (layer, selected, selected_macro, switching, switch_gen) = (
+                s.layer,
+                s.selected,
+                s.selected_macro,
+                s.switching,
+                s.switch_gen,
+            );
+            *s = live;
+            s.layer = layer;
+            s.selected = selected;
+            // A switch that started mid-resync must keep its bind-write gate.
+            s.switching = switching;
+            s.switch_gen = switch_gen;
+            // Re-clamp the macro selection against the fresh list.
+            s.selected_macro = if selected_macro < s.macros.len() {
+                selected_macro
+            } else {
+                0
+            };
+        });
+        return;
     }
 }
 
@@ -125,6 +170,12 @@ pub fn fire_or_resync(mut store: dioxus::prelude::Signal<AppState>, request: Req
 /// Overwrite the optimistic `unsaved` flag with the daemon's authoritative
 /// answer (a live-vs-disk config diff). No-op on any failure — the optimistic
 /// value stands, and the offline path is already handled by the caller.
+///
+/// Also mirrors the default/active profile NAMES from the same reply: the
+/// mutation this refresh follows may have moved them daemon-side
+/// (`RenameProfile` renames a matching default/active, `SetDefaultProfile` is
+/// the point), and a stale cached name would pin the DEFAULT badge to the
+/// wrong row until an unrelated resync.
 async fn refresh_unsaved(mut store: dioxus::prelude::Signal<AppState>) {
     use dioxus::prelude::WritableExt;
     if let Ok(Response::Status(status)) = send(Request::GetStatus).await {
@@ -132,6 +183,8 @@ async fn refresh_unsaved(mut store: dioxus::prelude::Signal<AppState>) {
             s.unsaved = status.unsaved_changes;
             if let Some(st) = s.status.as_mut() {
                 st.unsaved_changes = status.unsaved_changes;
+                st.default_profile = status.default_profile.clone();
+                st.active_profile = status.active_profile.clone();
             }
         });
     }
@@ -191,6 +244,10 @@ fn mark_online(mut store: dioxus::prelude::Signal<AppState>) {
 /// Sequence: `GetStatus` -> `ListProfiles` -> `GetProfile{active}` ->
 /// `GetDeviceInfo` -> `ListMacros` (+ best-effort per-macro, currently names
 /// only since there is no `GetMacro` request — macros load as name-only stubs).
+/// The first three are MANDATORY: each request opens its own connection, so a
+/// daemon dying mid-sequence is a real window — failing the whole load keeps
+/// the caller's prior state + offline flag instead of presenting the base's
+/// mock/stale profiles as live. Device info and macros stay best-effort.
 pub async fn load_state(base: AppState) -> Option<AppState> {
     load_state_on(&socket_path(), base).await
 }
@@ -210,24 +267,29 @@ pub async fn load_state_on(socket: &std::path::Path, mut base: AppState) -> Opti
     base.unsaved = status.unsaved_changes;
     base.status = Some(status);
 
-    // Profiles list.
-    if let Ok(Response::Profiles(list)) = send(Request::ListProfiles).await {
-        base.active_profile = list
-            .profiles
-            .iter()
-            .position(|p| p.name == list.active)
-            .unwrap_or(0);
-        base.profiles = list.profiles;
-    }
+    // Profiles list. Mandatory: a failure here (daemon died between requests)
+    // must fail the load, not leave the base's mock/stale list under
+    // `offline = false`.
+    let Ok(Response::Profiles(list)) = send(Request::ListProfiles).await else {
+        return None;
+    };
+    base.active_profile = list
+        .profiles
+        .iter()
+        .position(|p| p.name == list.active)
+        .unwrap_or(0);
+    base.profiles = list.profiles;
 
-    // The active profile in full (binds + lighting).
-    if let Ok(Response::Profile(p)) = send(Request::GetProfile {
+    // The active profile in full (binds + lighting). Mandatory for the same
+    // reason — editors must never edit a mock/stale body presented as live.
+    let Ok(Response::Profile(p)) = send(Request::GetProfile {
         name: active_name.clone(),
     })
     .await
-    {
-        base.profile = p;
-    }
+    else {
+        return None;
+    };
+    base.profile = p;
 
     // Device info.
     if let Ok(Response::DeviceInfo(info)) = send(Request::GetDeviceInfo).await {
@@ -357,15 +419,26 @@ pub fn set_brightness(store: dioxus::prelude::Signal<AppState>, level: u8) {
 /// `SetBind` targeting the stale name. The `switching` flag gates bind writes
 /// while the reload is in flight (see `commit_bind`). No-op/last-known offline.
 pub fn switch_profile_and_reload(mut store: dioxus::prelude::Signal<AppState>, name: String) {
-    use dioxus::prelude::WritableExt;
+    use dioxus::prelude::{ReadableExt, WritableExt};
     // Flip the active index immediately so the picker/selection updates (and the
     // offline path, where GetProfile fails, still reflects the choice), but set
     // `switching` to gate bind writes until the body lands.
+    //
+    // Overlapping switches: nothing stops the user firing a second switch while
+    // one is in flight, and the two tasks would otherwise share the one
+    // `switching` bool — the FIRST to finish would clear it (re-opening the
+    // bind gate mid-switch) and could land its stale body over the newer one.
+    // Each task therefore captures a fresh generation; only the task whose
+    // generation is still current may clear the flag or apply its result, and a
+    // superseded task drops its outcome silently (the newer one owns the store).
+    let mut generation = 0u64;
     store.with_mut(|s| {
         if let Some(idx) = s.profiles.iter().position(|x| x.name == name) {
             s.active_profile = idx;
         }
         s.switching = true;
+        s.switch_gen = s.switch_gen.wrapping_add(1);
+        generation = s.switch_gen;
     });
     dioxus::prelude::spawn(async move {
         match send(Request::SwitchProfile { name: name.clone() }).await {
@@ -375,6 +448,9 @@ pub fn switch_profile_and_reload(mut store: dioxus::prelude::Signal<AppState>, n
             // leave the header disagreeing with the daemon + editors (review #2).
             Ok(Response::Error { message }) => {
                 tracing_warn(&format!("daemon rejected switch: {message}; resyncing"));
+                if store.read().switch_gen != generation {
+                    return; // superseded: the newer switch settles the store
+                }
                 store.with_mut(|s| s.switching = false);
                 resync(store).await;
                 return;
@@ -383,7 +459,9 @@ pub fn switch_profile_and_reload(mut store: dioxus::prelude::Signal<AppState>, n
             // is absent, so the last-known body can't corrupt).
             Err(e) => {
                 mark_offline(store, &e);
-                store.with_mut(|s| s.switching = false);
+                if store.read().switch_gen == generation {
+                    store.with_mut(|s| s.switching = false);
+                }
                 return;
             }
             Ok(_) => mark_online(store),
@@ -393,6 +471,9 @@ pub fn switch_profile_and_reload(mut store: dioxus::prelude::Signal<AppState>, n
             _ => None,
         };
         store.with_mut(|s| {
+            if s.switch_gen != generation {
+                return; // superseded mid-flight: drop the stale body silently
+            }
             s.switching = false;
             // Reassign the body only on success; offline keeps the last-known
             // body (the live #1 corruption can't occur — SetBind is gated +
@@ -551,10 +632,15 @@ pub async fn import_profile_entries(
     }
     // Resync even on failure: a config-file import can partially land before a
     // rejection, and the list must reflect what the daemon actually holds.
+    // BOUNDED like every other wait in this dialog-blocking flow: this fn runs
+    // under the import modal (which refuses dismissal while busy), and an
+    // unbounded resync against a wedged daemon would lock it forever. On
+    // timeout the overlay is simply skipped — resync writes nothing until its
+    // load completes, so cancelling it mid-flight leaves the store untouched.
     if imported > 0 {
         store.with_mut(|s| s.unsaved = true);
     }
-    resync(store).await;
+    let _ = tokio::time::timeout(DIALOG_REPLY_TIMEOUT, resync(store)).await;
     if failures.is_empty() {
         Ok(imported)
     } else if imported > 0 {
@@ -779,6 +865,28 @@ mod tests {
             load_state_on(&sock, base).await.is_none(),
             "no daemon => None"
         );
+    }
+
+    /// A daemon dying MID-sequence (after `GetStatus`, before `ListProfiles`)
+    /// must fail the whole load: a `Some` here would hand the caller the base's
+    /// mock profiles/macros with `offline = false` — fabricated data presented
+    /// as live daemon state.
+    #[tokio::test]
+    async fn load_state_fails_when_daemon_dies_mid_sequence() {
+        let sock = temp_socket("die-mid");
+        let listener = UnixListener::bind(&sock).unwrap();
+        // Serve ONLY the GetStatus connection, then drop the listener: the
+        // follow-up ListProfiles connect is refused, as if the daemon died.
+        let server = tokio::spawn(serve_canned(listener, 1));
+
+        let base = crate::model::mock_state();
+        assert!(
+            load_state_on(&sock, base).await.is_none(),
+            "mid-sequence failure must fail the load wholesale"
+        );
+
+        server.await.unwrap();
+        let _ = std::fs::remove_file(&sock);
     }
 
     /// Executable check of the mutation WIRE FORMAT: drive a real `SetBind`

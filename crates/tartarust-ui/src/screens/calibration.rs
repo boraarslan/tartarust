@@ -77,13 +77,18 @@ pub fn Calibration() -> Element {
         }
     });
 
+    // Read the signal ONCE per render (the subscription is identical): this
+    // body re-runs up to 10x/sec while pressure moves, and each `analog()` call
+    // clones the full AnalogState (keys + pressures Vecs).
+    let state = analog();
+
     rsx! {
         PageHead { sub: "Click a key to tune its analog actuation. Caps fill with live pressure as you press." }
 
         // Contextual notice for non-live states. The keypad below ALWAYS renders
         // (so the board reads as "keys" in every state, consistent with the other
         // screens); the banner just explains why there's no live pressure yet.
-        match analog() {
+        match &state {
             None => rsx! { OfflineState {} },
             Some(a) if !a.analog_active => rsx! { DigitalModeState {} },
             Some(a) if a.keys.is_empty() => rsx! { NoKeysState {} },
@@ -93,7 +98,7 @@ pub fn Calibration() -> Element {
         // Page-level reset: return EVERY analog key to the default thresholds
         // (dropping any dual-step). Only offered while something is actually
         // custom; like any other edit it applies live and persists on Save.
-        if analog().is_some_and(|a| a.keys.iter().any(|k| k.is_custom())) {
+        if state.as_ref().is_some_and(|a| a.keys.iter().any(|k| k.is_custom())) {
             div { class: "cal-toolbar",
                 button {
                     class: "btn",
@@ -122,7 +127,7 @@ pub fn Calibration() -> Element {
             }
         }
 
-        Stage { state: analog() }
+        Stage { state }
     }
 }
 
@@ -142,11 +147,9 @@ fn Stage(state: Option<AnalogState>) -> Element {
     let mut dragging = use_signal(|| false);
     let mut multi_open = use_signal(|| false);
 
-    let keys = state.as_ref().map(|s| s.keys.clone()).unwrap_or_default();
-    let frame = state
-        .as_ref()
-        .map(|s| s.pressures.clone())
-        .unwrap_or_default();
+    // Move the two Vecs OUT of the by-value prop instead of cloning them —
+    // nothing below reads `state` itself, and this runs at the poll rate.
+    let (keys, frame) = state.map(|s| (s.keys, s.pressures)).unwrap_or_default();
 
     // Per-key pressure for the keypad overlay, keyed by evdev name: for each
     // configured analog key, look up its byte index in the live frame. Grid caps
@@ -208,6 +211,20 @@ fn Stage(state: Option<AnalogState>) -> Element {
     // opens on drag-end (>1 caps) or on Shift release (the stage's onkeyup below).
     let pointer = EventHandler::new(move |p: CapPointer| match p.phase {
         CapPhase::Down => {
+            // Re-claim the stage's DOM focus on every interaction start: it is
+            // granted once in `onmounted`, but wanders into the CalModal's
+            // inputs (sliders, the KeyPicker's autofocused search) or the
+            // toolbar's reset button during normal use, and clicking the
+            // non-focusable caps does NOT bring it back on WebKitGTK. Without
+            // this, the Shift-release detector (the stage's `onkeyup`) goes
+            // permanently deaf after the first modal interaction — Shift+click
+            // would highlight caps but never open the bulk editor.
+            spawn(async move {
+                let _ = document::eval(
+                    "document.getElementById('cal-stage')?.focus({preventScroll:true});",
+                )
+                .await;
+            });
             if p.shift {
                 // Shift+click: accumulate silently; the editor waits for release.
                 multi.write().insert(p.key);
@@ -238,7 +255,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
                     // the highlight can't wedge with no editor to open.
                     if set
                         .iter()
-                        .any(|k| k.evdev().is_some_and(|n| configured.contains(&n)))
+                        .any(|k| k.evdev().is_some_and(|n| configured.contains(n)))
                     {
                         multi_open.set(true);
                         store.write().selected = None;
@@ -312,7 +329,7 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 if e.key() == Key::Shift && !*dragging.peek() {
                     let set = multi.peek().clone();
                     if set.iter().any(|k| {
-                        k.evdev().is_some_and(|n| configured_shift.contains(&n))
+                        k.evdev().is_some_and(|n| configured_shift.contains(n))
                     }) {
                         multi_open.set(true);
                         store.write().selected = None;
@@ -385,9 +402,19 @@ fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Elem
     // each key's own dual-step (`second_*` forwarded verbatim). All captures are
     // Copy (signals), so this closure is reusable across both sliders.
     let push = move || {
-        let act = actuation();
-        let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
+        let act_raw = actuation();
         for c in cfgs.read().iter() {
+            // A key WITH a dual-step caps its primary at 254: the second point
+            // must be STRICTLY deeper, and `saturating_add(1)` at 255 would
+            // otherwise send second == actuation, violating the SetActuation
+            // contract. Release re-derives from the (possibly capped) value so
+            // hysteresis holds too.
+            let act = if c.second_actuation_point.is_some() {
+                act_raw.min(254)
+            } else {
+                act_raw
+            };
+            let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
             let sap = c
                 .second_actuation_point
                 .map(|p| p.max(act.saturating_add(1))); // deeper than actuation
@@ -541,7 +568,16 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
     // The second action comes from the KeyPicker, so it's already a valid evdev
     // name — no text coercion needed.
     let push = move || {
-        let act = actuation();
+        // With a dual-step the primary caps at 254: the second point must be
+        // STRICTLY deeper, and `saturating_add(1)` at 255 would otherwise send
+        // second == actuation, violating the SetActuation contract. (The slider
+        // max and the toggle handler keep the local signals ≤254 while the
+        // dual-step is on; this is the backstop.)
+        let act = if second_enabled() {
+            actuation().min(254)
+        } else {
+            actuation()
+        };
         let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
         let (sap, sact) = if second_enabled() {
             let p = second_point().max(act.saturating_add(1)); // deeper than actuation
@@ -613,7 +649,9 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
             Slider {
                 label: "Actuation point".to_string(),
                 value: act_v as f64,
-                min: 1.0, max: 255.0, step: 1.0,
+                // 254 while the dual-step is on: the second point needs strictly
+                // deeper headroom (see `push`).
+                min: 1.0, max: if second_on { 254.0 } else { 255.0 }, step: 1.0,
                 readout: format!("{act_v} ({}%)", pct100(act_v)),
                 on_input: move |v: f64| {
                     let nv = v as u8;
@@ -653,9 +691,17 @@ fn CalModal(cfg: AnalogKeyConfig, pressure: u8, open_left: bool) -> Element {
                 on_toggle: move |_| {
                     let now = !second_enabled();
                     second_enabled.set(now);
-                    // Turning it on seeds a sensible deeper point if unset.
-                    if now && second_point() <= actuation() {
-                        second_point.set(actuation().saturating_add(1).max(actuation()));
+                    if now {
+                        // A dual-step needs strictly-deeper headroom: pull a
+                        // bottomed-out primary back to 254 (the slider max also
+                        // drops to 254 while enabled), then seed a sensible
+                        // deeper point if unset.
+                        if actuation() > 254 {
+                            actuation.set(254);
+                        }
+                        if second_point() <= actuation() {
+                            second_point.set(actuation().saturating_add(1));
+                        }
                     }
                     push();
                 },

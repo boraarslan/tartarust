@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 
 // Canonical shared types — these are the source of truth (tartarust-ipc).
 pub use tartarust_ipc::model::{
-    BindAction, DeviceInfo, Effect, Layer, LightingState, Macro, MacroStep, Profile, Rgb,
-    ThumbAxisMode, WaveDirection,
+    BindAction, DeviceInfo, Effect, Layer, LightingState, MAX_MACRO_DELAY_MS, Macro, MacroStep,
+    Profile, Rgb, ThumbAxisMode, WaveDirection,
 };
 pub use tartarust_ipc::{DaemonStatus, ProfileSummary};
 
@@ -96,8 +96,6 @@ pub enum WheelDir {
 }
 
 impl KeyId {
-    /// The evdev key name this position emits on the stock device.
-    ///
     /// The evdev key name this position emits on the stock device, or `None`
     /// when the input is not a bindable `KEY_*` (see the scroll wheel).
     ///
@@ -113,7 +111,7 @@ impl KeyId {
     ///     the mouse interface), NOT a key — so it is likely NOT bindable as a
     ///     `KEY_*` in M1. We return `None` rather than fabricate a name.
     ///   * THUMB/SPACE: `KEY_SPACE` (high confidence).
-    pub fn evdev(self) -> Option<String> {
+    pub fn evdev(self) -> Option<&'static str> {
         let name = match self {
             KeyId::Grid(i) => GRID_EVDEV.get(i as usize).copied().unwrap_or("KEY_UNKNOWN"),
             KeyId::Thumb(d) => match d {
@@ -131,7 +129,7 @@ impl KeyId {
             KeyId::Space => "KEY_SPACE",
             KeyId::ThumbButton => "KEY_LEFTALT",
         };
-        Some(name.to_string())
+        Some(name)
     }
 
     /// Whether this input can be remapped as a key bind (false for the wheel).
@@ -618,6 +616,12 @@ pub struct AppState {
     /// True while a profile switch + reload is in flight. Gates bind writes so a
     /// `SetBind` can't fire against the stale active-profile name mid-switch.
     pub switching: bool,
+    /// Generation counter for profile switches: bumped when a switch starts, and
+    /// each switch task captures the value it bumped to. Only the task whose
+    /// generation is still current may clear `switching` or apply its
+    /// `GetProfile` result, so an older overlapping switch finishing late can't
+    /// re-open the bind gate or overwrite the newer switch's state.
+    pub switch_gen: u64,
     /// True when there are session edits the daemon hasn't written to disk
     /// (mirrors `DaemonStatus::unsaved_changes`). Set optimistically on any
     /// dirtying mutation, cleared on a successful `SaveProfile`, and re-synced
@@ -634,7 +638,7 @@ impl AppState {
     /// (or not a bindable key, e.g. the scroll wheel).
     pub fn bind_for(&self, key: KeyId, layer: Layer) -> Option<BindAction> {
         let name = key.evdev()?;
-        self.profile.layer(layer).get(&name).cloned()
+        self.profile.layer(layer).get(name).cloned()
     }
 
     /// Replace (or clear) a key's bind on the current edit layer, in-place.
@@ -645,10 +649,10 @@ impl AppState {
         let map = self.profile.layer_mut(layer);
         match action {
             Some(a) => {
-                map.insert(name, a);
+                map.insert(name.to_string(), a);
             }
             None => {
-                map.remove(&name);
+                map.remove(name);
             }
         }
     }
@@ -772,6 +776,7 @@ pub fn mock_state() -> AppState {
         selected: None,
         selected_macro: 0,
         switching: false,
+        switch_gen: 0,
         unsaved: false,
         macros_loaded,
     }

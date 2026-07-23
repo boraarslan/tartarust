@@ -67,20 +67,24 @@ impl Rgb {
     }
 }
 
-/// Wave scroll direction. OpenRazer clamps to 0..=2; the device speed byte is
-/// fixed at 0x28 (`razer_chroma_extended_matrix_effect_wave`).
+/// Wave scroll direction. Byte values match the only directions the OpenRazer
+/// stack ever sends for razerkbd devices (pylib `WAVE_LEFT = 0x01`,
+/// `WAVE_RIGHT = 0x02`); the device speed byte is fixed at 0x28
+/// (`razer_chroma_extended_matrix_effect_wave`). Wave has no wire capture for
+/// this device (`docs/research/09-lighting-modes-and-usb-raw-data.md` §3.4) —
+/// these values are source-derived, pending hardware verification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WaveDirection {
-    /// 0x00 (some devices treat 0x00/0x01 as the two directions).
-    Right = 0x00,
     Left = 0x01,
+    Right = 0x02,
 }
 
-/// Build the shared effect base report: args[0]=storage, args[1]=led,
-/// args[2]=effect; `data_size = arg_size`. Effect-specific bytes are layered on
-/// by the caller after this returns.
-fn effect_base(tid: TransactionId, arg_size: u8, effect_id: u8) -> RazerReport {
+/// Build the shared effect base command: args[0]=storage, args[1]=led,
+/// args[2]=effect; `data_size = arg_size`. Callers layer effect-specific bytes
+/// onto `cmd.args`, then frame it with [`Command::to_report`] — so the crc is
+/// computed exactly once, after all mutation.
+fn effect_base(tid: TransactionId, arg_size: u8, effect_id: u8) -> Command {
     Command::new(
         tid,
         EXT_MATRIX_CLASS,
@@ -88,125 +92,118 @@ fn effect_base(tid: TransactionId, arg_size: u8, effect_id: u8) -> RazerReport {
         arg_size,
         &[VARSTORE, BACKLIGHT_LED, effect_id],
     )
-    .to_report()
-}
-
-/// Re-stamp a report's crc after the caller mutated `arguments`.
-fn restamp(mut report: RazerReport) -> RazerReport {
-    report.update_crc();
-    report
 }
 
 // ---- effect setters -------------------------------------------------------
 
 /// "None" — turn the backlight off. `base(0x06, ..., 0x00)`.
 pub fn effect_none() -> RazerReport {
-    effect_base(TransactionId::Lighting, 0x06, EFFECT_NONE)
+    effect_base(TransactionId::Lighting, 0x06, EFFECT_NONE).to_report()
 }
 
 /// "Spectrum" — cycle the full colour spectrum. `base(0x06, ..., 0x03)`.
 pub fn effect_spectrum() -> RazerReport {
-    effect_base(TransactionId::Lighting, 0x06, EFFECT_SPECTRUM)
+    effect_base(TransactionId::Lighting, 0x06, EFFECT_SPECTRUM).to_report()
 }
 
 /// "Static" — a single fixed colour. `base(0x09, ..., 0x01)` then
 /// args[5]=0x01, args[6..9]=R,G,B.
 pub fn effect_static(c: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x09, EFFECT_STATIC);
-    r.arguments[5] = 0x01;
-    r.arguments[6] = c.r;
-    r.arguments[7] = c.g;
-    r.arguments[8] = c.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x09, EFFECT_STATIC);
+    cmd.args[5] = 0x01;
+    cmd.args[6] = c.r;
+    cmd.args[7] = c.g;
+    cmd.args[8] = c.b;
+    cmd.to_report()
 }
 
 /// "Wave" — animated colour wave. `base(0x06, ..., 0x04)` then
-/// args[3]=direction (clamped 0..=2), args[4]=0x28 (fixed speed).
+/// args[3]=direction, args[4]=0x28 (fixed speed).
 pub fn effect_wave(direction: WaveDirection) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x06, EFFECT_WAVE);
-    r.arguments[3] = direction as u8;
-    r.arguments[4] = 0x28; // fixed speed; lower is faster (OpenRazer default)
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x06, EFFECT_WAVE);
+    cmd.args[3] = direction as u8;
+    cmd.args[4] = 0x28; // fixed speed; lower is faster (OpenRazer default)
+    cmd.to_report()
 }
 
 /// "Reactive" — light up on keypress in a colour. `base(0x09, ..., 0x05)` then
 /// args[4]=speed (clamped 1..=4), args[5]=0x01, args[6..9]=R,G,B.
 pub fn effect_reactive(speed: u8, c: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x09, EFFECT_REACTIVE);
-    r.arguments[4] = speed.clamp(0x01, 0x04);
-    r.arguments[5] = 0x01;
-    r.arguments[6] = c.r;
-    r.arguments[7] = c.g;
-    r.arguments[8] = c.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x09, EFFECT_REACTIVE);
+    cmd.args[4] = speed.clamp(0x01, 0x04);
+    cmd.args[5] = 0x01;
+    cmd.args[6] = c.r;
+    cmd.args[7] = c.g;
+    cmd.args[8] = c.b;
+    cmd.to_report()
 }
 
 /// "Breathing", single colour. `base(0x09, ..., 0x02)` then args[3]=0x01,
 /// args[5]=0x01, args[6..9]=R,G,B. **Uses transaction id 0x3F.**
 pub fn effect_breathing_single(c: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Breathing, 0x09, EFFECT_BREATHING);
-    r.arguments[3] = 0x01;
-    r.arguments[5] = 0x01;
-    r.arguments[6] = c.r;
-    r.arguments[7] = c.g;
-    r.arguments[8] = c.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Breathing, 0x09, EFFECT_BREATHING);
+    cmd.args[3] = 0x01;
+    cmd.args[5] = 0x01;
+    cmd.args[6] = c.r;
+    cmd.args[7] = c.g;
+    cmd.args[8] = c.b;
+    cmd.to_report()
 }
 
 /// "Breathing", two colours. `base(0x0C, ..., 0x02)` then args[3]=0x02,
 /// args[5]=0x02, args[6..9]=RGB1, args[9..12]=RGB2. **Uses transaction id 0x3F.**
 pub fn effect_breathing_dual(c1: Rgb, c2: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Breathing, 0x0C, EFFECT_BREATHING);
-    r.arguments[3] = 0x02;
-    r.arguments[5] = 0x02;
-    r.arguments[6] = c1.r;
-    r.arguments[7] = c1.g;
-    r.arguments[8] = c1.b;
-    r.arguments[9] = c2.r;
-    r.arguments[10] = c2.g;
-    r.arguments[11] = c2.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Breathing, 0x0C, EFFECT_BREATHING);
+    cmd.args[3] = 0x02;
+    cmd.args[5] = 0x02;
+    cmd.args[6] = c1.r;
+    cmd.args[7] = c1.g;
+    cmd.args[8] = c1.b;
+    cmd.args[9] = c2.r;
+    cmd.args[10] = c2.g;
+    cmd.args[11] = c2.b;
+    cmd.to_report()
 }
 
 /// "Breathing", random colours. `base(0x06, ..., 0x02)` with no extra bytes.
 /// **Uses transaction id 0x3F.**
 pub fn effect_breathing_random() -> RazerReport {
-    effect_base(TransactionId::Breathing, 0x06, EFFECT_BREATHING)
+    effect_base(TransactionId::Breathing, 0x06, EFFECT_BREATHING).to_report()
 }
 
 /// "Starlight", random colours. `base(0x06, ..., 0x07)` then args[4]=speed
 /// (clamped 1..=3).
 pub fn effect_starlight_random(speed: u8) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x06, EFFECT_STARLIGHT);
-    r.arguments[4] = speed.clamp(0x01, 0x03);
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x06, EFFECT_STARLIGHT);
+    cmd.args[4] = speed.clamp(0x01, 0x03);
+    cmd.to_report()
 }
 
 /// "Starlight", single colour. `base(0x09, ..., 0x07)` then args[4]=speed
 /// (1..=3), args[5]=0x01, args[6..9]=R,G,B.
 pub fn effect_starlight_single(speed: u8, c: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x09, EFFECT_STARLIGHT);
-    r.arguments[4] = speed.clamp(0x01, 0x03);
-    r.arguments[5] = 0x01;
-    r.arguments[6] = c.r;
-    r.arguments[7] = c.g;
-    r.arguments[8] = c.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x09, EFFECT_STARLIGHT);
+    cmd.args[4] = speed.clamp(0x01, 0x03);
+    cmd.args[5] = 0x01;
+    cmd.args[6] = c.r;
+    cmd.args[7] = c.g;
+    cmd.args[8] = c.b;
+    cmd.to_report()
 }
 
 /// "Starlight", two colours. `base(0x0C, ..., 0x07)` then args[4]=speed (1..=3),
 /// args[5]=0x02, args[6..9]=RGB1, args[9..12]=RGB2.
 pub fn effect_starlight_dual(speed: u8, c1: Rgb, c2: Rgb) -> RazerReport {
-    let mut r = effect_base(TransactionId::Lighting, 0x0C, EFFECT_STARLIGHT);
-    r.arguments[4] = speed.clamp(0x01, 0x03);
-    r.arguments[5] = 0x02;
-    r.arguments[6] = c1.r;
-    r.arguments[7] = c1.g;
-    r.arguments[8] = c1.b;
-    r.arguments[9] = c2.r;
-    r.arguments[10] = c2.g;
-    r.arguments[11] = c2.b;
-    restamp(r)
+    let mut cmd = effect_base(TransactionId::Lighting, 0x0C, EFFECT_STARLIGHT);
+    cmd.args[4] = speed.clamp(0x01, 0x03);
+    cmd.args[5] = 0x02;
+    cmd.args[6] = c1.r;
+    cmd.args[7] = c1.g;
+    cmd.args[8] = c1.b;
+    cmd.args[9] = c2.r;
+    cmd.args[10] = c2.g;
+    cmd.args[11] = c2.b;
+    cmd.to_report()
 }
 
 /// Switch the device into "custom frame" display mode so an uploaded frame
@@ -233,15 +230,21 @@ const CUSTOM_FRAME_PACKET_LEN: u8 = 0x47;
 ///   args[2]=row_index, args[3]=start_col, args[4]=stop_col,
 ///   args[5..]=RGB triples for columns `start_col..=stop_col` (inclusive).
 ///
-/// `colors` must have exactly `stop_col + 1 - start_col` entries, and the span
-/// must fit the matrix and the 80-byte argument area. After uploading the
-/// frame(s), call [`effect_custom_frame`] to display it.
+/// `colors` must have exactly `stop_col + 1 - start_col` entries, `row_index`
+/// must be below [`MATRIX_ROWS`], and the span must fit the matrix and the
+/// 80-byte argument area. After uploading the frame(s), call
+/// [`effect_custom_frame`] to display it.
 pub fn set_custom_frame(
     row_index: u8,
     start_col: u8,
     stop_col: u8,
     colors: &[Rgb],
 ) -> Result<RazerReport, ProtocolError> {
+    if (row_index as usize) >= MATRIX_ROWS {
+        return Err(ProtocolError::InvalidArgument(
+            "custom frame row_index beyond matrix rows",
+        ));
+    }
     if stop_col < start_col {
         return Err(ProtocolError::InvalidArgument(
             "custom frame stop_col < start_col",
@@ -321,9 +324,13 @@ mod tests {
 
     #[test]
     fn wave_layout() {
-        let r = effect_wave(WaveDirection::Left);
-        assert_eq!(r.data_size, 0x06);
-        assert_eq!(&r.arguments[..5], &[0x01, 0x05, 0x04, 0x01, 0x28]);
+        let left = effect_wave(WaveDirection::Left);
+        assert_eq!(left.data_size, 0x06);
+        assert_eq!(&left.arguments[..5], &[0x01, 0x05, 0x04, 0x01, 0x28]);
+
+        // Right is 0x02, matching OpenRazer's WAVE_RIGHT (0x00 is never sent).
+        let right = effect_wave(WaveDirection::Right);
+        assert_eq!(&right.arguments[..5], &[0x01, 0x05, 0x04, 0x02, 0x28]);
     }
 
     #[test]
@@ -417,6 +424,10 @@ mod tests {
 
     #[test]
     fn set_custom_frame_rejects_bad_spans() {
+        assert!(
+            set_custom_frame(1, 0, 0, &[Rgb::new(0, 0, 0)]).is_err(),
+            "row beyond matrix rows"
+        );
         assert!(set_custom_frame(0, 5, 4, &[]).is_err(), "stop < start");
         assert!(
             set_custom_frame(0, 0, 21, &[]).is_err(),

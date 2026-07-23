@@ -83,12 +83,20 @@ pub fn Shell() -> Element {
             }
             let now = Instant::now();
             let prev = *last_down.peek();
-            last_down.set(Some(now));
             match prev {
                 Some(t) if now.duration_since(t) < Duration::from_millis(400) => {
+                    // Double press: toggle, and RESET the timer — otherwise every
+                    // press <400ms after the previous one keeps toggling, so an
+                    // eager double-click followed by a drag attempt would restore
+                    // the window instead of starting the move. Standard titlebar
+                    // behavior: the third press begins a fresh single-click cycle.
+                    last_down.set(None);
                     window.toggle_maximized();
                 }
-                _ => window.drag(),
+                _ => {
+                    last_down.set(Some(now));
+                    window.drag();
+                }
             }
         }
     };

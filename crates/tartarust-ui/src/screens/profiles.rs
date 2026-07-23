@@ -162,6 +162,20 @@ pub fn Profiles() -> Element {
                     let name_dup = name.clone();
                     let name_export = name.clone();
 
+                    // Delete is only actionable when the daemon would accept it:
+                    // it rejects deleting the active profile, the configured
+                    // default, and the last remaining profile.
+                    let can_delete = !is_active && !is_default && profiles.len() > 1;
+                    let delete_title = if is_active {
+                        "Can't delete the active profile — switch to another first"
+                    } else if is_default {
+                        "Can't delete the default profile — pick another default first"
+                    } else if profiles.len() <= 1 {
+                        "Can't delete the last profile"
+                    } else {
+                        "Delete this profile"
+                    };
+
                     rsx! {
                         div { class: row_class,
 
@@ -209,6 +223,25 @@ pub fn Profiles() -> Element {
                                             w.profile.name = from;
                                         }
                                     } else if new_name != from {
+                                        // Mirror the daemon: rename_profile also renames
+                                        // a matching configured-default / active name, so
+                                        // update the cached status alongside — a stale
+                                        // name would detach the DEFAULT badge (or pin it
+                                        // to a wrong row renamed onto the old name) until
+                                        // an unrelated resync. `refresh_unsaved` corrects
+                                        // this authoritatively once the daemon acks; this
+                                        // is the immediate optimistic mirror.
+                                        {
+                                            let mut w = store.write();
+                                            if let Some(st) = w.status.as_mut() {
+                                                if st.default_profile == from {
+                                                    st.default_profile = new_name.clone();
+                                                }
+                                                if st.active_profile == from {
+                                                    st.active_profile = new_name.clone();
+                                                }
+                                            }
+                                        }
                                         crate::ipc::rename_profile(store, from, new_name.clone());
                                         // Keep `committed` current so a follow-up
                                         // edit (Enter, keep typing) sends from the
@@ -394,18 +427,32 @@ pub fn Profiles() -> Element {
                                             "Rename"
                                         }
                                         div { class: "menu-sep" }
-                                        // Delete (guards against removing the last profile).
+                                        // Delete. Mirrors the daemon's guards in the UI
+                                        // (it rejects deleting the ACTIVE, DEFAULT, or
+                                        // last profile) — offering it anyway would just
+                                        // flicker the row away and snap back online, or
+                                        // strand a locally-deleted row offline.
                                         button {
-                                            class: "menu-item danger",
+                                            class: if can_delete { "menu-item danger" } else { "menu-item danger disabled" },
+                                            title: "{delete_title}",
                                             onclick: move |_| {
                                                 menu_open.set(None);
+                                                if !can_delete {
+                                                    return;
+                                                }
                                                 let mut w = store.write();
+                                                // Defense in depth behind the render-time guard.
                                                 if w.profiles.len() <= 1 {
                                                     return;
                                                 }
-                                                let n = w.profiles.get(i)
-                                                    .map(|p| p.name.clone())
-                                                    .unwrap_or_default();
+                                                // `i` is a render-snapshot index; a double event
+                                                // (or a resync shrinking the list between render
+                                                // and click) makes it stale — a stale index is a
+                                                // no-op, since Vec::remove would panic past the
+                                                // end (cf. the macros screen's delete guard).
+                                                let Some(n) = w.profiles.get(i).map(|p| p.name.clone()) else {
+                                                    return;
+                                                };
                                                 w.profiles.remove(i);
                                                 let new_len = w.profiles.len();
                                                 adjust_index_after_remove(&mut w.active_profile, i, new_len);

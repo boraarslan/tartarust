@@ -41,6 +41,10 @@ fn ipc_server_handles_requests_over_a_real_socket() {
     let socket =
         std::env::temp_dir().join(format!("tartarust-ipc-test-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket);
+    // `bind` also creates a `.lock` sidecar next to the socket; clean up any
+    // stale one from a crashed run. (Safe here: test paths are pid-unique. The
+    // daemon's own runtime lock must NEVER be unlinked — flock semantics.)
+    let _ = std::fs::remove_file(socket.with_extension("lock"));
 
     // Engine on a background thread, fed by the channel the daemon uses.
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
@@ -102,6 +106,7 @@ fn ipc_server_handles_requests_over_a_real_socket() {
     drop(engine_tx);
     let _ = engine_thread.join();
     let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(socket.with_extension("lock"));
 }
 
 /// Regression (#3): an oversized request line (no newline, > 64 KiB) must NOT
@@ -120,6 +125,8 @@ fn ipc_server_rejects_oversized_request_line() {
         std::process::id()
     ));
     let _ = std::fs::remove_file(&socket);
+    // Stale `.lock` sidecar cleanup — see the companion test.
+    let _ = std::fs::remove_file(socket.with_extension("lock"));
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let mut engine = Engine::new(Config::default_single());
@@ -147,18 +154,22 @@ fn ipc_server_rejects_oversized_request_line() {
             let _ = write_half.write_all(&flood).await;
             let _ = write_half.flush().await;
 
-            // The server should have replied with an overflow Error before closing.
+            // The server MUST have replied with an overflow Error before
+            // closing (the documented contract). Not flaky: the reply is
+            // written + flushed before the server drops the stream, and
+            // AF_UNIX delivers already-queued data ahead of EOF/reset — a
+            // silent close would surface here as `None`, not an error.
             let mut reader = BufReader::new(read_half).lines();
             let line = reader.next_line().await.expect("read");
-            if let Some(resp) = line {
-                assert!(
-                    matches!(
-                        serde_json::from_str::<Response>(&resp).unwrap(),
-                        Response::Error { .. }
-                    ),
-                    "expected an Error reply for the oversized line, got: {resp}"
-                );
-            }
+            let resp = line
+                .expect("server must reply with an Error before closing the oversized connection");
+            assert!(
+                matches!(
+                    serde_json::from_str::<Response>(&resp).unwrap(),
+                    Response::Error { .. }
+                ),
+                "expected an Error reply for the oversized line, got: {resp}"
+            );
             // Crucially: the daemon is still alive and serving — a fresh ping works.
             let pong = roundtrip(&socket, r#"{"kind":"ping"}"#).await;
             assert_eq!(
@@ -176,4 +187,5 @@ fn ipc_server_rejects_oversized_request_line() {
     drop(engine_tx);
     let _ = engine_thread.join();
     let _ = std::fs::remove_file(&socket);
+    let _ = std::fs::remove_file(socket.with_extension("lock"));
 }

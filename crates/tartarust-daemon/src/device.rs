@@ -39,8 +39,6 @@ pub enum DeviceCmd {
     ApplyLighting(LightingState),
     /// Set just the brightness. Applied directly — no acquire step needed.
     SetBrightness(u8),
-    /// Read firmware + serial + connection; reply on the channel.
-    GetInfo,
 }
 
 /// Handle to the device thread. Drop to stop it (closes the transport).
@@ -140,9 +138,6 @@ fn device_loop(rx: Receiver<Job>) {
                 if let Some(t) = transport.as_mut() {
                     send(t, device::set_brightness(level), "brightness");
                 }
-            }
-            Job::Cmd(DeviceCmd::GetInfo) => {
-                // GetInfo with no reply slot: just refresh nothing.
             }
             Job::Query(reply) => {
                 let info = read_info(transport.as_ref());

@@ -3,7 +3,9 @@
 use dioxus::prelude::*;
 
 use crate::components::{KeyPicker, PageHead};
-use crate::model::{Macro, MacroStep, adjust_index_after_remove, key_label, unique_name};
+use crate::model::{
+    MAX_MACRO_DELAY_MS, Macro, MacroStep, adjust_index_after_remove, key_label, unique_name,
+};
 use crate::use_store;
 
 // ---------------------------------------------------------------------------
@@ -271,15 +273,30 @@ fn MacroEditor(
                     // so do the rename first and capture the old name, then rekey.
                     let saved = {
                         let mut w = store.write();
+                        // Renaming onto ANOTHER macro's name must be refused:
+                        // daemon-side SaveMacro is a blind by-name upsert, so a
+                        // collision would overwrite that macro's steps, and the
+                        // local list would hold two same-named rows — breaking
+                        // every by-name operation (delete, the loaded-set,
+                        // GetMacro, Macro binds). The create path de-dupes via
+                        // `unique_name` for exactly this reason. (Computed before
+                        // the `get_mut` below — a match-guard iter would overlap
+                        // the mutable borrow.)
+                        let collides = w
+                            .macros
+                            .iter()
+                            .enumerate()
+                            .any(|(j, x)| j != sel && x.name == new_name);
                         match w.macros.get_mut(sel) {
-                            Some(m) if !new_name.is_empty() && m.name != new_name => {
+                            Some(m) if !new_name.is_empty() && m.name != new_name && !collides => {
                                 let old = std::mem::replace(&mut m.name, new_name.clone());
                                 let m = m.clone();
                                 w.macros_loaded.remove(&old);
                                 w.macros_loaded.insert(new_name);
                                 Some((old, m))
                             }
-                            // Empty or unchanged: snap the draft back to the real name.
+                            // Empty, unchanged, or colliding: snap the draft back
+                            // to the real name.
                             _ => {
                                 name_draft.set(macro_name.clone());
                                 None
@@ -448,11 +465,15 @@ fn StepChip(index: usize, step: MacroStep, sel: usize) -> Element {
                         style: "width:52px; background:transparent; border:none; outline:none; color:var(--amber); font-family:var(--mono); font-size:11.5px;",
                         r#type: "number",
                         min: "0",
+                        max: "{MAX_MACRO_DELAY_MS}",
                         autofocus: true,
                         value: "{ms}",
-                        // Commit on change/blur; clamp parse failures to 0.
+                        // Commit on change/blur; clamp parse failures to 0 and
+                        // cap at MAX_MACRO_DELAY_MS — the daemon rejects
+                        // over-cap delays (they would be unpersistable), so
+                        // never produce one from the editor.
                         onchange: move |e| {
-                            let new_ms = e.value().parse::<u64>().unwrap_or(0);
+                            let new_ms = e.value().parse::<u64>().unwrap_or(0).min(MAX_MACRO_DELAY_MS);
                             editing.set(false);
                             mutate_and_save(store, sel, move |m| match m.steps.get_mut(index) {
                                 Some(MacroStep::Delay { ms }) if *ms != new_ms => {

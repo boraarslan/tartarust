@@ -143,16 +143,14 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
         buf.clear();
         // Read one newline-delimited frame with a byte cap and an idle timeout.
         let line = match read_capped_line(&mut reader, &mut buf).await {
-            Ok(Ok(Frame::Eof)) => break,
-            Ok(Ok(Frame::Line)) => &buf[..], // a frame (without the trailing newline)
-            Ok(Err(overflow)) => {
+            Frame::Eof | Frame::IdleTimeout => break, // disconnect / stalled client
+            Frame::Line => &buf[..],                  // a frame (without the trailing newline)
+            Frame::Overflow(message) => {
                 // Oversized line: reply with an error and close the connection
                 // rather than keep buffering.
-                let _ =
-                    write_response(&mut write_half, &Response::Error { message: overflow }).await;
+                let _ = write_response(&mut write_half, &Response::Error { message }).await;
                 break;
             }
-            Err(_idle) => break, // idle timeout: drop the connection
         };
 
         let text = String::from_utf8_lossy(line);
@@ -170,28 +168,31 @@ async fn handle_connection(stream: UnixStream, engine_tx: StdSender<EngineMsg>) 
     Ok(())
 }
 
-/// One framing outcome from [`read_capped_line`]. EOF is a distinct variant so
-/// an empty line (`Line(0)`, e.g. a client's accidental leading `\n`) is skipped
-/// by the connection loop instead of being mistaken for a disconnect.
+/// One framing outcome from [`read_capped_line`] — the four ways a read can
+/// end, flat. EOF is a distinct variant so an empty line (e.g. a client's
+/// accidental leading `\n`) is skipped by the connection loop instead of being
+/// mistaken for a disconnect.
 enum Frame {
     /// The peer closed the connection (no pending payload).
     Eof,
-    /// A complete frame is in `buf` (possibly empty — an empty line).
+    /// A complete frame is in the caller's `buf` (possibly empty — an empty line).
     Line,
+    /// The frame reached [`MAX_REQUEST_BYTES`] before a newline; the payload is
+    /// the error message to send the client before closing.
+    Overflow(String),
+    /// No data arrived within [`IDLE_TIMEOUT`]; drop the connection.
+    IdleTimeout,
 }
 
 /// Read one `\n`-terminated frame into `buf`, with a HARD byte cap and an idle
-/// timeout. Returns:
-///   * `Ok(Ok(frame))` — EOF, or a frame in `buf` (without the trailing newline),
-///   * `Ok(Err(msg))` — the frame reached the cap before a newline (overflow),
-///   * `Err(())` — idle timeout elapsed waiting for data.
+/// timeout. The outcome is a [`Frame`]; on [`Frame::Line`] the frame is in
+/// `buf` (without the trailing newline).
 ///
 /// Genuinely memory-bounded: it consumes the buffered reader chunk-by-chunk
 /// (`fill_buf`/`consume`) and stops the instant `buf` would exceed the cap, so a
 /// newline-less flood never allocates past [`MAX_REQUEST_BYTES`]. The whole read
 /// is wrapped in one idle timeout.
-#[allow(clippy::type_complexity)]
-async fn read_capped_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> Result<Result<Frame, String>, ()>
+async fn read_capped_line<R>(reader: &mut R, buf: &mut Vec<u8>) -> Frame
 where
     R: AsyncBufReadExt + Unpin,
 {
@@ -199,16 +200,16 @@ where
         loop {
             let available = match reader.fill_buf().await {
                 Ok(b) => b,
-                Err(_) => return Ok(Frame::Eof), // read error: treat as EOF
+                Err(_) => return Frame::Eof, // read error: treat as EOF
             };
             if available.is_empty() {
                 // EOF. A non-empty buf is a final unterminated frame; hand it
                 // over — the next call returns Eof.
-                return Ok(if buf.is_empty() {
+                return if buf.is_empty() {
                     Frame::Eof
                 } else {
                     Frame::Line
-                });
+                };
             }
             // Copy up to a newline, but never past the cap.
             match available.iter().position(|&b| b == b'\n') {
@@ -217,17 +218,17 @@ where
                     buf.extend_from_slice(&available[..take]);
                     reader.consume(nl + 1); // consume through the newline
                     if buf.len() >= MAX_REQUEST_BYTES && take < nl {
-                        return Err(format!(
+                        return Frame::Overflow(format!(
                             "request exceeds {MAX_REQUEST_BYTES} bytes; closing connection"
                         ));
                     }
-                    return Ok(Frame::Line);
+                    return Frame::Line;
                 }
                 None => {
                     let room = MAX_REQUEST_BYTES.saturating_sub(buf.len());
                     if room == 0 {
                         // Cap reached with no newline in sight: overflow.
-                        return Err(format!(
+                        return Frame::Overflow(format!(
                             "request exceeds {MAX_REQUEST_BYTES} bytes; closing connection"
                         ));
                     }
@@ -240,7 +241,7 @@ where
         }
     })
     .await
-    .map_err(|_| ())
+    .unwrap_or(Frame::IdleTimeout)
 }
 
 /// Serialize and write one response line (newline-terminated), flushing.

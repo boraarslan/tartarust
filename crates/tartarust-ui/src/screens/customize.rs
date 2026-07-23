@@ -136,7 +136,7 @@ impl Kind {
 
 #[component]
 fn BindEditor() -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let s = store.read();
     let key_id = s.selected.unwrap();
     let layer = s.layer;
@@ -217,7 +217,7 @@ fn BindEditor() -> Element {
                                         Kind::Hypershift => BindAction::Hypershift,
                                         _ => BindAction::Disable,
                                     };
-                                    commit_bind(&mut store, key_id, Some(action));
+                                    commit_bind(store, key_id, Some(action));
                                     pending.set(None);
                                 } else {
                                     // Switching to a value-requiring type from a
@@ -226,7 +226,7 @@ fn BindEditor() -> Element {
                                     // shift state immediately, instead of lingering
                                     // until the user picks a value (bug fix).
                                     if matches!(current_kind, Kind::Disable | Kind::Hypershift) {
-                                        commit_bind(&mut store, key_id, None);
+                                        commit_bind(store, key_id, None);
                                     }
                                     pending.set(Some(kind));
                                 }
@@ -250,7 +250,7 @@ fn BindEditor() -> Element {
                 button {
                     class: "btn",
                     onclick: move |_| {
-                        commit_bind(&mut store, key_id, None);
+                        commit_bind(store, key_id, None);
                         pending.set(None);
                     },
                     "Reset to default"
@@ -274,7 +274,7 @@ fn BindEditor() -> Element {
 /// low-error control (pills + picker, dropdown, or debounced multi-arg field)
 /// and commits through [`commit_bind`].
 fn value_editor(
-    mut store: Signal<crate::model::AppState>,
+    store: Signal<crate::model::AppState>,
     key_id: KeyId,
     kind: Kind,
     bind: Option<BindAction>,
@@ -311,7 +311,7 @@ fn value_editor(
                     placeholder: "Choose a macro…",
                     empty_msg: "No macros yet — create one on the Macros screen.",
                     on_pick: move |name| {
-                        commit_bind(&mut store, key_id, Some(BindAction::Macro { name }));
+                        commit_bind(store, key_id, Some(BindAction::Macro { name }));
                         pending.set(None);
                     },
                 }
@@ -335,7 +335,7 @@ fn value_editor(
                     placeholder: "Choose a profile…",
                     empty_msg: "No profiles available.",
                     on_pick: move |name| {
-                        commit_bind(&mut store, key_id, Some(BindAction::SwitchProfile { name }));
+                        commit_bind(store, key_id, Some(BindAction::SwitchProfile { name }));
                         pending.set(None);
                     },
                 }
@@ -377,7 +377,7 @@ fn value_field_label(kind: Kind) -> &'static str {
 /// handler can call it independently — signals are `Copy`, so there's no shared
 /// `FnMut` closure to borrow.
 fn commit_chord(
-    mut store: Signal<crate::model::AppState>,
+    store: Signal<crate::model::AppState>,
     key_id: KeyId,
     mut pending: Signal<Option<Kind>>,
     new_keys: Vec<String>,
@@ -387,7 +387,7 @@ fn commit_chord(
     } else {
         Some(BindAction::Key { keys: new_keys })
     };
-    commit_bind(&mut store, key_id, action);
+    commit_bind(store, key_id, action);
     pending.set(None);
 }
 
@@ -457,13 +457,12 @@ fn MousePicker(
     current: String,
     pending: Signal<Option<Kind>>,
 ) -> Element {
-    let mut store = store;
     let mut pending = pending;
     rsx! {
         KeyPicker {
             value: current,
             on_pick: move |picked: String| {
-                commit_bind(&mut store, key_id, Some(BindAction::MouseButton { button: picked }));
+                commit_bind(store, key_id, Some(BindAction::MouseButton { button: picked }));
                 pending.set(None);
             },
         }
@@ -524,7 +523,6 @@ fn LaunchEditor(
     command: Vec<String>,
     pending: Signal<Option<Kind>>,
 ) -> Element {
-    let mut store = store;
     let mut pending = pending;
     let text = command.join(" ");
 
@@ -545,7 +543,7 @@ fn LaunchEditor(
                 } else {
                     Some(BindAction::LaunchProgram { command: argv })
                 };
-                commit_bind(&mut store, key_id, action);
+                commit_bind(store, key_id, action);
                 pending.set(None);
             },
         }
@@ -561,7 +559,7 @@ fn LaunchEditor(
 /// that aren't bindable keys (the scroll wheel emits a relative axis, not KEY_*),
 /// and while a profile switch is in flight (the body is about to be replaced, so
 /// a SetBind here could target the stale active-profile name — review #1).
-fn commit_bind(store: &mut Signal<crate::model::AppState>, key: KeyId, action: Option<BindAction>) {
+fn commit_bind(mut store: Signal<crate::model::AppState>, key: KeyId, action: Option<BindAction>) {
     let Some(evdev) = key.evdev() else { return };
     if store.read().switching {
         return;
@@ -571,5 +569,5 @@ fn commit_bind(store: &mut Signal<crate::model::AppState>, key: KeyId, action: O
         w.set_bind(key, action.clone());
         (w.active_profile_name(), w.layer)
     };
-    crate::ipc::set_bind(*store, profile, layer, evdev, action);
+    crate::ipc::set_bind(store, profile, layer, evdev.to_string(), action);
 }

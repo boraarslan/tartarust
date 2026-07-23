@@ -234,18 +234,14 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
     // 2. Create the real SINK (output thread) and resolve its node.
     let out = output::spawn().expect("output sink");
     let out_tx = out.sender();
-    let sink_path = {
-        // Retry: output::spawn already retries, but guard against an empty list.
-        let mut tries = 0;
-        loop {
-            if let Some(p) = out.node_paths().first() {
-                break p.clone();
-            }
-            tries += 1;
-            assert!(tries < 100, "sink node never appeared");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    // `node_paths()` is a snapshot resolved once inside `output::spawn` (which
+    // already retries ~500ms) and never updated afterwards — retrying here
+    // could never succeed after the first check, so just take it or fail.
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
     // Detach the output handle NOW, before anything below can panic: its Drop
     // joins the output thread, which never exits while the engine thread holds
     // an `out_tx` clone (the same reason main.rs can't cooperatively join) — so
@@ -342,34 +338,41 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
     std::mem::forget(source);
 }
 
-/// Regression (#2): if the device is unplugged while a key is held, the reader's
+/// Regression (#2): if the reader's fd dies while a key is held, the reader's
 /// exit must trigger `EngineMsg::ReleaseAll` so the held output key is released
-/// on the sink (no stuck key). Here we simulate unplug by DROPPING the source
-/// uinput device mid-hold, which makes the grabbed reader's `fetch_events` error.
+/// on the sink (no stuck key).
+///
+/// The fd is severed via `EVIOCREVOKE` — the real-world case ReleaseAll
+/// uniquely guards (logind revokes evdev fds on session switch) — and NOT by
+/// destroying the source uinput device: destruction makes the kernel's
+/// `input_dev_release_keys` synthesize a KEY_A up and deliver it to the grab
+/// holder BEFORE the fd starts erroring, so the engine would release KEY_B via
+/// the ordinary key-up path and a deleted ReleaseAll send would keep this test
+/// green (the exact regression it exists to catch). A revoked client gets
+/// `ENODEV` with NO synthesized ups, so the KEY_B(0) asserted below can only
+/// come from `EngineMsg::ReleaseAll`.
 #[test]
-fn unplug_mid_hold_releases_held_keys() {
+fn revoke_mid_hold_releases_held_keys() {
+    use std::os::fd::{AsRawFd, BorrowedFd};
+
     if !uinput_available() {
-        eprintln!("SKIPPED unplug_mid_hold: /dev/uinput not writable here");
+        eprintln!("SKIPPED revoke_mid_hold: /dev/uinput not writable here");
         return;
     }
-    eprintln!("RAN unplug_mid_hold: /dev/uinput available");
+    eprintln!("RAN revoke_mid_hold: /dev/uinput available");
 
     let mut source = build_source();
     let source_path = node_path(&mut source);
 
     let out = output::spawn().expect("output sink");
     let out_tx = out.sender();
-    let sink_path = {
-        let mut tries = 0;
-        loop {
-            if let Some(p) = out.node_paths().first() {
-                break p.clone();
-            }
-            tries += 1;
-            assert!(tries < 100, "sink node never appeared");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    // Snapshot resolved once in `output::spawn` (see the first test) — a retry
+    // loop here could never succeed after the first check.
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
     // Detach the output handle before any assert can panic: its Drop joins the
     // output thread, which the engine's `out_tx` clone keeps alive forever — an
     // unwind would deadlock the test binary instead of reporting red.
@@ -384,6 +387,13 @@ fn unplug_mid_hold_releases_held_keys() {
     // Unchecked grab: synthetic uinput source has no Tartarus USB ids (see the
     // companion test for why production `grab` would refuse it).
     input::grab_unchecked(&mut node).expect("grab source");
+
+    // Duplicate the source-node fd BEFORE `node` moves into the reader: the
+    // dup shares the same open file description — the same evdev client — so
+    // revoking the dup below revokes the reader's fd too.
+    let sabotage_fd = unsafe { BorrowedFd::borrow_raw(node.device.as_raw_fd()) }
+        .try_clone_to_owned()
+        .expect("dup source fd");
 
     let (engine_tx, engine_rx) = mpsc::channel::<EngineMsg>();
     let device = tartarust_daemon::device::spawn();
@@ -409,19 +419,55 @@ fn unplug_mid_hold_releases_held_keys() {
         "held KEY_A -> KEY_B down"
     );
 
-    // Simulate UNPLUG: drop the source device. The grabbed reader's next
-    // fetch_events() errors, the reader sends EngineMsg::ReleaseAll, and the
-    // engine releases the held output (KEY_B) on the sink.
-    drop(source);
+    // Sever the reader via EVIOCREVOKE (see the test doc for why NOT
+    // `drop(source)`): its next read errors with ENODEV — with no synthesized
+    // key-ups — so the reader sends EngineMsg::ReleaseAll and the engine
+    // releases the held output (KEY_B) on the sink. `ioctl` is declared
+    // locally to avoid a libc dependency for one call.
+    const EVIOCREVOKE: std::os::raw::c_ulong = 0x4004_4591; // _IOW('E', 0x91, int)
+    unsafe extern "C" {
+        fn ioctl(
+            fd: std::os::raw::c_int,
+            request: std::os::raw::c_ulong,
+            ...
+        ) -> std::os::raw::c_int;
+    }
+    // The kernel's EVIOCREVOKE handler rejects any non-NULL argument with
+    // EINVAL (`if (p) return -EINVAL;` in evdev_do_ioctl) — pass a literal
+    // null pointer, not a pointer to zero.
+    let rc = unsafe {
+        ioctl(
+            sabotage_fd.as_raw_fd(),
+            EVIOCREVOKE,
+            std::ptr::null::<std::os::raw::c_int>(),
+        )
+    };
+    assert_eq!(rc, 0, "EVIOCREVOKE failed on the dup'd source fd");
+    drop(sabotage_fd);
+
+    // Revoke also released the reader's EVIOCGRAB, so IMMEDIATELY re-grab the
+    // source on a test-owned fd and release the held KEY_A on it: otherwise
+    // process-exit destruction of the still-held source would leak a kernel-
+    // synthesized KEY_A up to the focused window. The reader's revoked fd
+    // receives nothing (the engine never sees this up — it lands only in
+    // `regrab`'s buffer and is discarded), so the KEY_B(0) below remains
+    // attributable to ReleaseAll alone.
+    let mut regrab = open_with_retry(&source_path);
+    regrab.grab().expect("re-grab source after revoke");
+    source.emit(&[*KeyEvent::new(KeyCode::KEY_A, 0)]).unwrap();
 
     let up = read_keys(&mut sink_reader, 1, Duration::from_secs(3));
     assert_eq!(
         up,
         vec![(KeyCode::KEY_B.0, 0)],
-        "unplug mid-hold must release the held KEY_B (no stuck key)"
+        "revoke mid-hold must release the held KEY_B (no stuck key)"
     );
 
     drop(sink_reader);
+    drop(regrab);
+    // Keep the source device alive until process exit (as the other tests do):
+    // its keys are all up now, so teardown synthesizes nothing.
+    std::mem::forget(source);
 }
 
 /// Pipeline NKRO regression guard: prove the HOST side (reader -> engine ->
@@ -468,17 +514,13 @@ fn nkro_eight_simultaneous_keys_pass_through() {
     // 2. Real SINK (output thread) + its node.
     let out = output::spawn().expect("output sink");
     let out_tx = out.sender();
-    let sink_path = {
-        let mut tries = 0;
-        loop {
-            if let Some(p) = out.node_paths().first() {
-                break p.clone();
-            }
-            tries += 1;
-            assert!(tries < 100, "sink node never appeared");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    // Snapshot resolved once in `output::spawn` (see the first test) — a retry
+    // loop here could never succeed after the first check.
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
     // Detach the output handle before any assert can panic: its Drop joins the
     // output thread, which the engine's `out_tx` clone keeps alive forever — an
     // unwind would deadlock the test binary instead of reporting red.
@@ -581,17 +623,13 @@ fn drop_set_filters_claimed_key_but_passes_unclaimed() {
     // 2. Real SINK (output thread) + its node.
     let out = output::spawn().expect("output sink");
     let out_tx = out.sender();
-    let sink_path = {
-        let mut tries = 0;
-        loop {
-            if let Some(p) = out.node_paths().first() {
-                break p.clone();
-            }
-            tries += 1;
-            assert!(tries < 100, "sink node never appeared");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    };
+    // Snapshot resolved once in `output::spawn` (see the first test) — a retry
+    // loop here could never succeed after the first check.
+    let sink_path = out
+        .node_paths()
+        .first()
+        .cloned()
+        .expect("sink node never appeared in sysfs (output::spawn's 500ms retry elapsed)");
     // Detach the output handle before any assert can panic: its Drop joins the
     // output thread, which the engine's `out_tx` clone keeps alive forever — an
     // unwind would deadlock the test binary instead of reporting red.

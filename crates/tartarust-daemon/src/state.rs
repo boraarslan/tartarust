@@ -125,7 +125,10 @@ impl Default for AnalogConfig {
 
 /// One analog key's actuation settings: the logical key it maps to and its
 /// rising/falling thresholds (plus an optional deeper second step).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `Deserialize` is implemented by hand (via [`AnalogKeyRaw`]) because the
+/// `release_point` default derives from a SIBLING field — see the field doc.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AnalogKey {
     /// The evdev key name (`"KEY_Q"`) this byte index represents. The engine
     /// resolves THIS key's bind — so analog is a drop-in for the grabbed
@@ -133,22 +136,24 @@ pub struct AnalogKey {
     pub key: String,
     /// Pressure at/above which the key registers as DOWN (rising edge). Default
     /// [`DEFAULT_ACTUATION_POINT`].
-    #[serde(default = "default_actuation_point")]
     pub actuation_point: u8,
     /// Pressure below which a held key registers as UP (falling edge). Must be
-    /// `< actuation_point` for hysteresis. Default `actuation_point -`
-    /// [`DEFAULT_HYSTERESIS`].
-    #[serde(default = "default_release_point")]
+    /// `< actuation_point` for hysteresis. When omitted it defaults to THIS
+    /// entry's `actuation_point -` [`DEFAULT_HYSTERESIS`] — a serde `default`
+    /// fn cannot see sibling fields, so the derivation lives in the manual
+    /// [`Deserialize`] impl. The resolved concrete value is what serializes
+    /// back, so the on-disk schema (and the daemon-rewrites-config round-trip)
+    /// is unchanged.
     pub release_point: u8,
     /// Optional deeper actuation point for a dual-step ("second function") key.
     /// When pressure crosses this (while already past `actuation_point`), the
     /// `second_action` key additionally fires — the primary stays held.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub second_actuation_point: Option<u8>,
     /// The evdev key the second step fires (required iff `second_actuation_point`
     /// is set; ignored otherwise). Released when pressure falls back below the
     /// second actuation point minus the hysteresis margin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub second_action: Option<String>,
 }
 
@@ -156,8 +161,49 @@ fn default_actuation_point() -> u8 {
     DEFAULT_ACTUATION_POINT
 }
 
-fn default_release_point() -> u8 {
-    DEFAULT_ACTUATION_POINT.saturating_sub(DEFAULT_HYSTERESIS)
+/// The deserialization shadow of [`AnalogKey`]: identical fields except
+/// `release_point` is `Option<u8>`, so "omitted" stays representable. A serde
+/// `default = fn` cannot see sibling fields, which previously made an omitted
+/// `release_point` fall back to the GLOBAL constant (`0x50`) even under a
+/// custom `actuation_point` — inverting the pair for light triggers (release
+/// above actuation), which `resolve_actuator` then silently clamps to a
+/// hysteresis of ~1 pressure unit: chatter, exactly what hysteresis exists to
+/// prevent. The manual impl derives the omitted value from the entry's OWN
+/// `actuation_point`, as the field doc promises.
+#[derive(Deserialize)]
+struct AnalogKeyRaw {
+    key: String,
+    #[serde(default = "default_actuation_point")]
+    actuation_point: u8,
+    #[serde(default)]
+    release_point: Option<u8>,
+    #[serde(default)]
+    second_actuation_point: Option<u8>,
+    #[serde(default)]
+    second_action: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AnalogKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = AnalogKeyRaw::deserialize(deserializer)?;
+        // An omitted release_point derives from THIS entry's actuation point.
+        // `.max(1)` mirrors `resolve_actuator`'s anti-latch clamp (a release
+        // point of 0 could never fire — pressure is a u8).
+        let release_point = raw
+            .release_point
+            .unwrap_or_else(|| raw.actuation_point.saturating_sub(DEFAULT_HYSTERESIS))
+            .max(1);
+        Ok(AnalogKey {
+            key: raw.key,
+            actuation_point: raw.actuation_point,
+            release_point,
+            second_actuation_point: raw.second_actuation_point,
+            second_action: raw.second_action,
+        })
+    }
 }
 
 // The contract crate publishes the derived release default as a plain constant
@@ -239,9 +285,13 @@ impl Config {
         }
     }
 
-    /// Write the config to `path` atomically (temp file + rename), creating
-    /// parent directories as needed. A crash mid-write cannot truncate the
-    /// user's config — the rename is atomic and only swaps in a complete file.
+    /// Write the config to `path` atomically and durably (temp file + fsync +
+    /// rename), creating parent directories as needed. A crash mid-write cannot
+    /// truncate the user's config — the rename is atomic and only swaps in a
+    /// complete file — and the temp file is `sync_all`ed BEFORE the rename, so
+    /// a power loss / kernel panic cannot commit the rename's metadata ahead of
+    /// the file's data (which on some filesystems/mounts would leave an empty
+    /// or partial `config.toml` that bricks the next startup).
     ///
     /// Note: this rewrites the file from the in-memory model, so any comments in
     /// a hand-edited config are dropped. That's expected for daemon-managed
@@ -255,14 +305,35 @@ impl Config {
             })?;
         }
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes()).map_err(|source| StateError::Write {
-            path: tmp.clone(),
-            source,
-        })?;
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp).map_err(|source| StateError::Write {
+                path: tmp.clone(),
+                source,
+            })?;
+            f.write_all(text.as_bytes())
+                .map_err(|source| StateError::Write {
+                    path: tmp.clone(),
+                    source,
+                })?;
+            f.sync_all().map_err(|source| StateError::Write {
+                path: tmp.clone(),
+                source,
+            })?;
+        }
         std::fs::rename(&tmp, path).map_err(|source| StateError::Write {
             path: path.to_path_buf(),
             source,
         })?;
+        // Best-effort durability for the rename itself (the new directory
+        // entry): opening a directory read-only and calling `sync_all` is
+        // supported on Linux. Not fatal on failure — the data is already
+        // synced, and the entry lands with the next journal commit anyway.
+        if let Some(parent) = path.parent()
+            && let Ok(dir) = std::fs::File::open(parent)
+        {
+            let _ = dir.sync_all();
+        }
         Ok(())
     }
 
@@ -539,6 +610,61 @@ mod tests {
             k.release_point,
             DEFAULT_ACTUATION_POINT - DEFAULT_HYSTERESIS
         );
+    }
+
+    /// An omitted `release_point` under a CUSTOM `actuation_point` must derive
+    /// from that entry's own actuation point (`actuation - DEFAULT_HYSTERESIS`),
+    /// not the global constant — the global fallback used to produce an
+    /// inverted pair for light triggers (release 0x50 above actuation 0x30),
+    /// silently collapsing the hysteresis to ~1 pressure unit (chatter).
+    #[test]
+    fn analog_key_omitted_release_derives_from_custom_actuation() {
+        let src = r#"
+            default_profile = "default"
+            input_mode = "analog"
+            [analog.keys.5]
+            key = "KEY_Q"
+            actuation_point = 0x30
+            [profiles.default]
+            name = "default"
+        "#;
+        let cfg = Config::from_toml(src).expect("light-trigger analog key must load");
+        let k = &cfg.analog.keys["5"];
+        assert_eq!(k.actuation_point, 0x30);
+        assert_eq!(
+            k.release_point,
+            0x30 - DEFAULT_HYSTERESIS,
+            "omitted release_point must derive from the entry's own actuation point"
+        );
+
+        // An explicit release_point is preserved verbatim (no derivation).
+        let src = r#"
+            default_profile = "default"
+            input_mode = "analog"
+            [analog.keys.5]
+            key = "KEY_Q"
+            actuation_point = 0x30
+            release_point = 0x18
+            [profiles.default]
+            name = "default"
+        "#;
+        let cfg = Config::from_toml(src).unwrap();
+        assert_eq!(cfg.analog.keys["5"].release_point, 0x18);
+
+        // A tiny actuation point still yields a firable release point: the
+        // derivation clamps at 1 (release fires on `pressure < release_point`,
+        // and pressure is a u8 — 0 could never fire).
+        let src = r#"
+            default_profile = "default"
+            input_mode = "analog"
+            [analog.keys.5]
+            key = "KEY_Q"
+            actuation_point = 0x08
+            [profiles.default]
+            name = "default"
+        "#;
+        let cfg = Config::from_toml(src).unwrap();
+        assert_eq!(cfg.analog.keys["5"].release_point, 1);
     }
 
     /// The full analog config round-trips through TOML unchanged (the daemon

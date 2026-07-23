@@ -120,7 +120,15 @@ fn App() -> Element {
         const SPAWN_RETRIES: u32 = 12;
         const RETRY_DELAY: Duration = Duration::from_millis(500);
 
-        if let Some(live) = ipc::load_state(mock_state()).await {
+        // Base every attempt on the CURRENT store, not a fresh mock_state():
+        // the UI is fully interactive during the retry window, and overlaying
+        // live state onto a pristine mock would wipe whatever the user did in
+        // the meantime (selected key, edit layer, macro selection) the moment
+        // a retry lands. `peek()` reads WITHOUT subscribing — a plain read
+        // would make this resource re-run on every store write, spawning an
+        // IPC load per keystroke.
+        let base = store.peek().clone();
+        if let Some(live) = ipc::load_state(base).await {
             store.set(live);
             return;
         }
@@ -129,7 +137,8 @@ fn App() -> Element {
         }
         for _ in 0..SPAWN_RETRIES {
             tokio::time::sleep(RETRY_DELAY).await;
-            if let Some(live) = ipc::load_state(mock_state()).await {
+            let base = store.peek().clone();
+            if let Some(live) = ipc::load_state(base).await {
                 store.set(live);
                 return;
             }

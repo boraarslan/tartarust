@@ -141,8 +141,9 @@ fn drain_source<S: FocusSource + Send + 'static>(
 
 /// The Hyprland event-socket source.
 pub struct HyprlandSource {
-    /// Pending classes already parsed but not yet returned (the initial sample
-    /// plus any line burst).
+    /// The connected event-socket reader; `None` until connected (or after a
+    /// socket drop — EOF and read errors reset it). `ensure_connected`
+    /// (re)fills it with backoff.
     reader: Option<BufReader<UnixStream>>,
     /// Whether we still owe the one-shot initial-focus sample after connecting.
     need_initial: bool,

@@ -192,6 +192,16 @@ pub enum MacroStep {
     },
 }
 
+/// Upper bound on a [`MacroStep::Delay`]'s `ms` (24 hours).
+///
+/// The JSON wire accepts the full `u64` range, but the daemon's config file and
+/// export bundles are TOML, whose integers are `i64` — a delay above `i64::MAX`
+/// deserializes fine over IPC yet makes every subsequent whole-config TOML
+/// encode (persist, export) fail. Capping far below that (and still far beyond
+/// any real macro's needs) keeps every accepted macro persistable. Enforced by
+/// [`Macro::validate`].
+pub const MAX_MACRO_DELAY_MS: u64 = 86_400_000;
+
 /// A named macro: an ordered sequence of steps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Macro {
@@ -202,6 +212,27 @@ pub struct Macro {
     pub name: String,
     /// Ordered steps.
     pub steps: Vec<MacroStep>,
+}
+
+impl Macro {
+    /// Structural validation every accepted macro must pass: each
+    /// [`MacroStep::Delay`] is capped at [`MAX_MACRO_DELAY_MS`] so the macro
+    /// stays representable in TOML persistence (config file, export bundles).
+    /// Key-name checks are NOT here — the daemon owns the evdev vocabulary and
+    /// layers them on at its boundary.
+    pub fn validate(&self) -> Result<(), String> {
+        for step in &self.steps {
+            if let MacroStep::Delay { ms } = step
+                && *ms > MAX_MACRO_DELAY_MS
+            {
+                return Err(format!(
+                    "macro \"{}\": delay of {ms} ms exceeds the maximum of {MAX_MACRO_DELAY_MS} ms",
+                    self.name
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A complete profile: binds for both layers, lighting, and an optional linked
@@ -372,4 +403,29 @@ pub fn thumb_diagonal_cardinals(name: &str) -> Option<[&'static str; 2]> {
         .iter()
         .find(|(d, _)| *d == name)
         .map(|(_, c)| *c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Macro::validate` draws the line exactly at [`MAX_MACRO_DELAY_MS`]: a
+    /// delay at the cap passes, one past it fails. The cap exists because the
+    /// JSON wire accepts any `u64` but TOML persistence cannot encode values
+    /// above `i64::MAX` — an over-cap macro would wedge whole-config saves.
+    #[test]
+    fn macro_validate_caps_delay_ms() {
+        let mut m = Macro {
+            name: "m".into(),
+            steps: vec![MacroStep::Delay {
+                ms: MAX_MACRO_DELAY_MS,
+            }],
+        };
+        assert_eq!(m.validate(), Ok(()));
+        m.steps.push(MacroStep::Delay {
+            ms: MAX_MACRO_DELAY_MS + 1,
+        });
+        let err = m.validate().unwrap_err();
+        assert!(err.contains("delay"), "want a delay-cap error, got: {err}");
+    }
 }

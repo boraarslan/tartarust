@@ -32,17 +32,24 @@ pub use model::{
 pub const PROTOCOL_VERSION: u32 = 0;
 
 /// Default control-socket path, under `$XDG_RUNTIME_DIR` (falls back to `/tmp`).
+///
+/// A set-but-empty `XDG_RUNTIME_DIR` is treated as unset (per the XDG spec),
+/// otherwise the daemon would silently bind a cwd-relative `tartarust.sock`
+/// while clients resolve theirs against a different cwd.
 pub fn default_socket_path() -> PathBuf {
-    let runtime =
-        std::env::var_os("XDG_RUNTIME_DIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     runtime.join("tartarust.sock")
 }
 
 /// The control-socket path every client resolves through: [`default_socket_path`],
 /// overridable via `TARTARUST_SOCKET` (tests / multiple instances). The
-/// daemon, CLI, and UI all use this one function so they can never disagree.
+/// daemon, CLI, and UI all use this one function so they can never disagree —
+/// provided they see the same environment. An empty `TARTARUST_SOCKET` is
+/// treated as unset; a relative one is the caller's responsibility.
 pub fn socket_path() -> PathBuf {
-    match std::env::var_os("TARTARUST_SOCKET") {
+    match std::env::var_os("TARTARUST_SOCKET").filter(|v| !v.is_empty()) {
         Some(p) => PathBuf::from(p),
         None => default_socket_path(),
     }

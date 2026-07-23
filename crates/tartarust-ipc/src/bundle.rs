@@ -65,6 +65,13 @@ pub fn parse(text: &str) -> Result<ImportSource, String> {
         let bundle: ProfileExport =
             toml::from_str(text).map_err(|e| format!("invalid profile bundle: {e}"))?;
         bundle.validate()?;
+        // Bundled macros must satisfy the shared structural rules (e.g. the
+        // delay cap) so an import can never smuggle in a macro the daemon
+        // could not persist. The daemon re-checks at its boundary; failing
+        // here just surfaces the error at parse time with the file in hand.
+        for m in &bundle.macros {
+            m.validate()?;
+        }
         return Ok(ImportSource::Bundle(bundle));
     }
     let config: ConfigProfiles = toml::from_str(text).map_err(|e| {
@@ -130,6 +137,29 @@ mod tests {
             panic!("an export must parse back as a bundle");
         };
         assert_eq!(back, bundle);
+    }
+
+    /// A bundle macro with an over-cap delay is refused at parse time. Values
+    /// in (MAX_MACRO_DELAY_MS, i64::MAX] ARE TOML-representable, so such a
+    /// file can exist on disk — but importing it would hand the daemon a macro
+    /// it refuses (and, unchecked, one that would wedge whole-config saves).
+    #[test]
+    fn bundle_with_over_cap_delay_is_rejected() {
+        let bundle = ProfileExport::new(
+            Profile::new("x"),
+            vec![Macro {
+                name: "stall".into(),
+                steps: vec![MacroStep::Delay {
+                    ms: crate::model::MAX_MACRO_DELAY_MS + 1,
+                }],
+            }],
+        );
+        let text = to_toml(&bundle).unwrap();
+        let err = parse(&text).unwrap_err();
+        assert!(
+            err.contains("delay"),
+            "want the delay-cap error, got: {err}"
+        );
     }
 
     /// A bundle from a NEWER build is refused rather than half-understood —

@@ -90,9 +90,56 @@ pub struct ActuationUpdate {
 /// `second_action` key name at runtime, and a stale set would keep dropping a
 /// digital key nothing synthesizes anymore — killing it until restart. Single
 /// writer: this module ([`spawn`] seeds it from the built [`Actuator`] before
-/// any reader exists; the run loop republishes [`Actuator::claimed_codes`] after
-/// every applied update). Readers take the lock only on key-DOWN edges.
+/// any reader exists; the run loop republishes after every applied update).
+/// Both sites publish through [`publish_claimed`], which subtracts the
+/// thumb-area codes ([`THUMB_AREA_CODES`]) so a config collision cannot kill a
+/// physical thumb key. Readers take the lock only on key-DOWN edges.
 pub type ClaimedKeys = Arc<RwLock<HashSet<u16>>>;
+
+/// The evdev codes the thumb-area physical keys emit digitally in DRIVER mode:
+/// the thumb button (`KEY_LEFTALT`) plus the four thumbpad arrows (named only
+/// in prose elsewhere in the daemon — this is their single in-code authority).
+///
+/// In DRIVER mode the grid is digitally SILENT, so these are the only codes
+/// the boot-node reader can ever see from a DIFFERENT physical key than an
+/// analog grid key. If a grid entry claims one of them (e.g. `second_action =
+/// "KEY_LEFTALT"` — a natural "deep press = modifier" config), a naive drop
+/// set would make the reader drop the real thumb key's every event: a
+/// silently, deterministically dead physical key. [`publish_claimed`]
+/// therefore subtracts these codes from the published set (with a warning).
+/// Excluding them cannot re-introduce double-feeding — no grid key can emit
+/// them digitally while DRIVER mode holds. (`KEY_SPACE`, the one genuine
+/// same-physical-key dupe candidate, is not thumb-area and stays claimed.)
+const THUMB_AREA_CODES: [KeyCode; 5] = [
+    KeyCode::KEY_LEFTALT,
+    KeyCode::KEY_UP,
+    KeyCode::KEY_DOWN,
+    KeyCode::KEY_LEFT,
+    KeyCode::KEY_RIGHT,
+];
+
+/// Publish the actuator's claimed codes into the shared drop set, minus
+/// [`THUMB_AREA_CODES`] (warned per collision — the user should know the
+/// analog binding shares a code with a physical thumb key). Caveat of keeping
+/// the thumb key alive: the engine tracks held state by input code, so holding
+/// the colliding analog key AND the physical thumb key simultaneously aliases
+/// (the first UP releases the pair) — mild, and far better than a dead key.
+fn publish_claimed(actuator: &Actuator, claimed: &ClaimedKeys) {
+    let mut codes = actuator.claimed_codes();
+    for thumb in THUMB_AREA_CODES {
+        if codes.remove(&thumb.0) {
+            tracing::warn!(
+                key = ?thumb,
+                "analog config claims a thumb-area key code; the physical thumb \
+                 key's digital events will still flow (holding both keys at once \
+                 aliases: the first release ends the pair)"
+            );
+        }
+    }
+    if let Ok(mut set) = claimed.write() {
+        *set = codes;
+    }
+}
 
 /// A snapshot of live analog state shared between the source thread (writer) and
 /// the engine/IPC handler (reader), for `GetAnalogState`.
@@ -331,6 +378,11 @@ impl Actuator {
                 keys.push((index, actuator));
             }
         }
+        // The config map is `BTreeMap<String, _>`, which iterates in
+        // lexicographic STRING order ("10" < "2"); sort by the parsed numeric
+        // index so `on_frame`'s documented byte-index emission order holds
+        // (a same-frame modifier+letter crossing depends on it).
+        keys.sort_by_key(|&(i, _)| i);
         tracing::info!(configured = keys.len(), "analog actuator built");
         Actuator { keys }
     }
@@ -371,7 +423,10 @@ impl Actuator {
             }
             *prev = next;
         } else {
-            self.keys.push((index, next));
+            // Keep `keys` sorted by byte index (see `from_config`) so a
+            // freshly-inserted entry doesn't break `on_frame`'s ordering.
+            let pos = self.keys.partition_point(|(i, _)| *i < index);
+            self.keys.insert(pos, (index, next));
         }
         releases
     }
@@ -379,7 +434,8 @@ impl Actuator {
     /// The key codes this actuator can synthesize RIGHT NOW: every configured
     /// entry's primary code plus its second-step code where a valid second step
     /// exists. This is the single authority the hybrid drop set ([`ClaimedKeys`])
-    /// is built from. Deriving from the BUILT actuator — not the raw config — is
+    /// is built from (via [`publish_claimed`], which additionally subtracts the
+    /// thumb-area codes). Deriving from the BUILT actuator — not the raw config — is
     /// load-bearing: the set inherits every inclusion check
     /// [`Actuator::from_config`]/[`Actuator::apply_update`] perform, so an entry
     /// the actuator skipped (non-numeric or out-of-range index, unknown key
@@ -467,7 +523,8 @@ impl Drop for AnalogSource {
 /// `ready_rx`, so the caller learns of it synchronously instead of the daemon
 /// silently running with no input.
 ///
-/// `armed` is a process-global flag set true once DRIVER mode is active and
+/// `armed` is a process-global flag set true just before the reader enters
+/// DRIVER mode (pre-armed, so the panic-hook net covers the open itself) and
 /// cleared once NORMAL is restored; the daemon's panic hook reads it to decide
 /// whether to send a best-effort NORMAL before aborting. It is a `&'static`
 /// (not an `Arc`) precisely so the panic hook — which can fire from any thread at
@@ -497,9 +554,7 @@ pub fn spawn(
     // BUILT actuator makes the set exactly mirror what can be synthesized; see
     // [`Actuator::claimed_codes`].
     let mut actuator = Actuator::from_config(&config);
-    if let Ok(mut set) = claimed.write() {
-        *set = actuator.claimed_codes();
-    }
+    publish_claimed(&actuator, &claimed);
 
     // Open the reader on a oneshot so `spawn` returns the open Result while the
     // reader stays owned by the worker thread (the ownership is what guarantees
@@ -512,9 +567,19 @@ pub fn spawn(
     let join = thread::Builder::new()
         .name("tartarust-analog".into())
         .spawn(move || {
+            // Pre-arm the panic hook BEFORE open(): open() sends the DRIVER
+            // command internally, so arming only after it returns would leave a
+            // window where a panic on any other thread aborts (skipping every
+            // Drop) with DRIVER active but `armed` false — the hook would skip
+            // its NORMAL restore and the keypad would stay mute until replug.
+            // Over-arming is safe (the hook's NORMAL send is idempotent and
+            // harmless if DRIVER was never entered); under-arming is not. This
+            // narrows rather than fully closes the race — the hook's NORMAL and
+            // an in-flight DRIVER command are unordered — but the exposed window
+            // is now the USB round-trip itself, not the whole open().
+            thread_armed.store(true, Ordering::SeqCst);
             let mut reader = match AnalogReader::open() {
                 Ok(r) => {
-                    thread_armed.store(true, Ordering::SeqCst);
                     // Mark active only once DRIVER is held, so GetAnalogState
                     // reflects "source running" rather than "ever attempted".
                     thread_snapshot.active.store(true, Ordering::SeqCst);
@@ -522,6 +587,9 @@ pub fn spawn(
                     r
                 }
                 Err(e) => {
+                    // open() failed: its internal guard already restored NORMAL
+                    // on the way out (or DRIVER was never entered) — disarm.
+                    thread_armed.store(false, Ordering::SeqCst);
                     let _ = ready_tx.send(Err(e));
                     return;
                 }
@@ -538,6 +606,21 @@ pub fn spawn(
                 &updates,
                 &claimed,
             );
+
+            // The source is exiting: un-claim every code so the still-running
+            // hybrid digital readers stop dropping them. This matters on the
+            // error exit (a hidraw failure while the evdev nodes stay alive —
+            // e.g. an interface-level unbind): the daemon keeps serving, the
+            // reader drop below restores NORMAL, and the grid resumes digital
+            // 6KRO reports — with a stale set, every analog-configured key
+            // would stay silently dead until daemon restart. Cleared BEFORE
+            // the reader drop so no digital event can race a stale set; no
+            // double-feed is possible, since this thread synthesizes nothing
+            // anymore. (On clean shutdown the process exits right after, so
+            // clearing is harmless.)
+            if let Ok(mut set) = claimed.write() {
+                set.clear();
+            }
 
             // Clear `active` so a post-shutdown GetAnalogState reads inactive.
             // Order vs the reader drop doesn't affect safety (active is advisory
@@ -614,9 +697,7 @@ fn run_loop(
             // one. Recomputing from the actuator (the authority) is idempotent,
             // so a rejected/no-op update republishing is harmless. The readers'
             // down-edge latching keeps a key held ACROSS this swap consistent.
-            if let Ok(mut set) = claimed.write() {
-                *set = actuator.claimed_codes();
-            }
+            publish_claimed(actuator, claimed);
         }
 
         match reader.poll(poll_timeout) {
@@ -1241,6 +1322,96 @@ mod tests {
         // Remove the second step entirely: only the primary stays claimed.
         a.apply_update(5, &key_cfg("KEY_Q", 0x60, 0x50));
         assert_eq!(a.claimed_codes(), HashSet::from([KeyCode::KEY_Q.0]));
+    }
+
+    /// The PUBLISHED drop set must exclude the thumb-area codes: in DRIVER
+    /// mode those codes can only arrive digitally from a DIFFERENT physical
+    /// key (the thumb button / thumbpad arrows, whose sole emission path is
+    /// the boot node), so claiming them would kill that physical key —
+    /// deterministically and silently. Ordinary claims still publish.
+    #[test]
+    fn publish_claimed_excludes_thumb_area_codes() {
+        // `second_action = "KEY_LEFTALT"` — the natural "deep press = Alt
+        // modifier" config that collides with the thumb button's code.
+        let a = Actuator::from_config(&dual_step(5, "KEY_Q", "KEY_LEFTALT"));
+        let claimed: ClaimedKeys = Arc::new(RwLock::new(HashSet::new()));
+        publish_claimed(&a, &claimed);
+        let set = claimed.read().unwrap();
+        assert!(
+            set.contains(&KeyCode::KEY_Q.0),
+            "ordinary claim must publish"
+        );
+        assert!(
+            !set.contains(&KeyCode::KEY_LEFTALT.0),
+            "thumb-area code must never be published (it would kill the \
+             physical thumb button)"
+        );
+    }
+
+    /// A thumbpad-arrow collision on the PRIMARY key is excluded the same way,
+    /// and the spacebar — the one genuine same-physical-key dupe — stays
+    /// claimed.
+    #[test]
+    fn publish_claimed_excludes_arrows_but_keeps_space() {
+        let mut keys = BTreeMap::new();
+        keys.insert("3".to_string(), key_cfg("KEY_UP", 0x60, 0x50));
+        keys.insert("19".to_string(), key_cfg("KEY_SPACE", 0x60, 0x50));
+        let a = Actuator::from_config(&AnalogConfig {
+            poll_interval_ms: 50,
+            keys,
+        });
+        let claimed: ClaimedKeys = Arc::new(RwLock::new(HashSet::new()));
+        publish_claimed(&a, &claimed);
+        let set = claimed.read().unwrap();
+        assert_eq!(*set, HashSet::from([KeyCode::KEY_SPACE.0]));
+    }
+
+    // ---- on_frame emission order (byte-index, not lexicographic) ----
+
+    /// `BTreeMap<String, _>` iterates `"10"` before `"2"`; the actuator must
+    /// sort by the numeric byte index so a same-frame crossing emits byte 2
+    /// (here a modifier) before byte 10 (a letter) — the documented order.
+    #[test]
+    fn on_frame_emits_in_byte_index_order_across_digit_widths() {
+        let mut keys = BTreeMap::new();
+        keys.insert("10".to_string(), key_cfg("KEY_A", 0x60, 0x50));
+        keys.insert("2".to_string(), key_cfg("KEY_LEFTSHIFT", 0x60, 0x50));
+        let mut a = Actuator::from_config(&AnalogConfig {
+            poll_interval_ms: 50,
+            keys,
+        });
+        let mut pressures = [0u8; ANALOG_KEY_COUNT];
+        pressures[2] = 0xFF;
+        pressures[10] = 0xFF;
+        assert_eq!(
+            a.on_frame(&AnalogFrame { pressures }),
+            vec![
+                (KeyCode::KEY_LEFTSHIFT, VALUE_DOWN),
+                (KeyCode::KEY_A, VALUE_DOWN)
+            ],
+            "byte 2 must emit before byte 10 (byte-index order)"
+        );
+    }
+
+    /// A live insert via `apply_update` keeps the byte-index order.
+    #[test]
+    fn apply_update_insert_keeps_byte_index_order() {
+        let mut a = Actuator::from_config(&one_key(5, "KEY_Q"));
+        assert!(
+            a.apply_update(2, &key_cfg("KEY_LEFTSHIFT", 0x60, 0x50))
+                .is_empty()
+        );
+        let mut pressures = [0u8; ANALOG_KEY_COUNT];
+        pressures[2] = 0xFF;
+        pressures[5] = 0xFF;
+        assert_eq!(
+            a.on_frame(&AnalogFrame { pressures }),
+            vec![
+                (KeyCode::KEY_LEFTSHIFT, VALUE_DOWN),
+                (KeyCode::KEY_Q, VALUE_DOWN)
+            ],
+            "an inserted lower index must emit before existing higher indices"
+        );
     }
 
     #[test]

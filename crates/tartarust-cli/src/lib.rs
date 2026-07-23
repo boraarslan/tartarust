@@ -12,10 +12,12 @@
 //!     talk to a running daemon over the `tartarust-ipc` Unix socket (newline-
 //!     delimited JSON) and print the reply.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcCommand;
+use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -135,7 +137,7 @@ enum LightingOp {
     Set {
         /// Effect: none, static, spectrum, wave, reactive, breathing, starlight.
         effect: String,
-        /// Color as a hex string `RRGGBB` (for static/reactive/breathing).
+        /// Color as a hex string `RRGGBB` (for static/reactive/breathing/starlight).
         #[arg(long)]
         color: Option<String>,
     },
@@ -150,10 +152,12 @@ pub fn main() -> Result<()> {
         Cmd::Discover => run_daemon(&["discover".into()]),
         Cmd::DiscoverKeys => run_daemon(&["discover-keys".into()]),
         Cmd::Run { config } => {
-            let mut args = vec!["run".to_string()];
+            let mut args = vec![OsString::from("run")];
             if let Some(path) = config {
                 args.push("--config".into());
-                args.push(path.to_string_lossy().into_owned());
+                // OsString end-to-end: paths are arbitrary bytes on Linux, and
+                // a lossy conversion here would hand the daemon a mangled path.
+                args.push(path.into_os_string());
             }
             run_daemon(&args)
         }
@@ -196,25 +200,28 @@ async fn socket_command(cmd: Cmd) -> Result<()> {
                 print_response(send(&socket, &Request::GetLighting { profile: None }).await?)
             }
             LightingOp::Set { effect, color } => {
-                // Validate the args BEFORE the round-trip below, so a bad
-                // --color errors cleanly even with no daemon running. The
-                // brightness is a placeholder until the fetch.
-                let mut lighting = build_lighting(&effect, color.as_deref(), 255)?;
-                // `set` changes only the effect — preserve the profile's current brightness.
-                let current = send(&socket, &Request::GetLighting { profile: None }).await?;
-                match current {
-                    Response::Lighting(state) => lighting.brightness = state.brightness,
+                // Validate the args BEFORE any round-trip, so a bad --color
+                // errors cleanly even with no daemon running.
+                let effect = build_effect(&effect, color.as_deref())?;
+                // `set` changes only the effect — fetch the profile's current
+                // brightness first so it is preserved. Anything but a Lighting
+                // reply is fatal: exiting zero here would report success for a
+                // SetLighting that was never sent.
+                let brightness = match send(&socket, &Request::GetLighting { profile: None })
+                    .await?
+                {
+                    Response::Lighting(state) => state.brightness,
+                    Response::Error { message } => bail!("querying current lighting: {message}"),
                     other => {
-                        print_response(other);
-                        return Ok(());
+                        bail!("unexpected daemon reply: {other:?} — daemon/CLI version mismatch?")
                     }
-                }
+                };
                 print_response(
                     send(
                         &socket,
                         &Request::SetLighting {
                             profile: None,
-                            lighting,
+                            lighting: LightingState { effect, brightness },
                         },
                     )
                     .await?,
@@ -307,9 +314,11 @@ async fn import_profiles(
     // so the save step below must still run or the successes would silently
     // evaporate on the next daemon restart. That is also why a TRANSPORT
     // failure breaks instead of bubbling out with `?`.
+    let total = entries.len();
     let mut imported = 0usize;
     let mut failures = Vec::new();
-    for (profile, macros) in entries {
+    let mut remaining = entries.into_iter();
+    for (profile, macros) in remaining.by_ref() {
         let shown = rename.clone().unwrap_or_else(|| profile.name.clone());
         let macro_count = macros.len();
         match send(
@@ -372,22 +381,39 @@ async fn import_profiles(
             }
         }
     }
-    if !failures.is_empty() {
-        bail!(
-            "{} of {} profile(s) failed to import: {}",
+    // The `break` arms above abandon the loop mid-file: name every profile
+    // that was never even sent, so the report accounts for the whole file
+    // rather than just the attempted prefix.
+    let unattempted: Vec<String> = remaining.map(|(profile, _)| profile.name).collect();
+    if !failures.is_empty() || !unattempted.is_empty() {
+        let mut msg = format!(
+            "{} of {total} profile(s) failed to import: {}",
             failures.len(),
-            failures.len() + imported,
             failures.join(", ")
         );
+        if !unattempted.is_empty() {
+            msg.push_str(&format!(
+                "; {} profile(s) not attempted after the error: {}",
+                unattempted.len(),
+                unattempted.join(", ")
+            ));
+        }
+        bail!(msg);
     }
     Ok(())
 }
 
-/// Build a [`LightingState`] from an effect name and optional hex color.
-fn build_lighting(effect: &str, color: Option<&str>, brightness: u8) -> Result<LightingState> {
+/// Build an [`Effect`] from an effect name and optional hex color.
+///
+/// `--color` is rejected for effects that cannot carry one — silently
+/// accepting it would let the user believe the color took effect.
+fn build_effect(effect: &str, color: Option<&str>) -> Result<Effect> {
     let parsed_color = color.map(parse_hex).transpose()?;
     let need_color = || parsed_color.unwrap_or(Rgb::new(0, 255, 0));
-    let effect = match effect {
+    Ok(match effect {
+        "none" | "spectrum" | "wave" if parsed_color.is_some() => bail!(
+            "--color has no effect for `{effect}` (only static, reactive, breathing, starlight take a color)"
+        ),
         "none" => Effect::None,
         "spectrum" => Effect::Spectrum,
         "static" => Effect::Static {
@@ -410,14 +436,15 @@ fn build_lighting(effect: &str, color: Option<&str>, brightness: u8) -> Result<L
         other => bail!(
             "unknown effect `{other}` (try: none, static, spectrum, wave, reactive, breathing, starlight)"
         ),
-    };
-    Ok(LightingState { effect, brightness })
+    })
 }
 
 /// Parse `RRGGBB` (optionally `#RRGGBB`) into an [`Rgb`].
 fn parse_hex(s: &str) -> Result<Rgb> {
     let s = s.strip_prefix('#').unwrap_or(s);
-    if s.len() != 6 || !s.is_ascii() {
+    // Require hex digits only — `from_str_radix` alone would also accept a
+    // leading `+` per pair, silently misreading typos like `+1+2+3`.
+    if s.len() != 6 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("color must be 6 hex digits (RRGGBB), got `{s}`");
     }
     let byte = |i: usize| u8::from_str_radix(&s[i..i + 2], 16);
@@ -445,30 +472,50 @@ fn print_response(resp: Response) {
     }
 }
 
-/// Connect, send one request, read one response (newline-delimited JSON).
-async fn send(socket: &Path, request: &Request) -> Result<Response> {
-    let stream = UnixStream::connect(socket).await.with_context(|| {
-        format!(
-            "connecting to daemon at {} — is it running? (`tartarust run`)",
-            socket.display()
-        )
-    })?;
-    let (read_half, mut write_half) = stream.into_split();
-    let mut line = serde_json::to_string(request)?;
-    line.push('\n');
-    write_half.write_all(line.as_bytes()).await?;
-    write_half.flush().await?;
+/// Cap on one full request/reply round-trip in [`send`]. Generous because a
+/// degraded-but-alive device can legitimately hold a reply for several seconds
+/// (the daemon retries hidraw ioctls with multi-second kernel timeouts).
+const SEND_TIMEOUT: Duration = Duration::from_secs(30);
 
-    let mut reader = BufReader::new(read_half).lines();
-    match reader.next_line().await? {
-        Some(resp) => Ok(serde_json::from_str(&resp)?),
-        None => bail!("daemon closed the connection without replying"),
-    }
+/// Connect, send one request, read one response (newline-delimited JSON).
+///
+/// The whole round-trip is bounded by [`SEND_TIMEOUT`]: a wedged daemon (one
+/// whose listener still accepts but whose request loop is stuck, e.g. blocked
+/// in a device ioctl) must fail the command — `ping` especially — rather than
+/// hang it forever. Connect errors still surface immediately with their own
+/// context; only a genuine stall hits the timeout.
+async fn send(socket: &Path, request: &Request) -> Result<Response> {
+    tokio::time::timeout(SEND_TIMEOUT, async {
+        let stream = UnixStream::connect(socket).await.with_context(|| {
+            format!(
+                "connecting to daemon at {} — is it running? (`tartarust run`)",
+                socket.display()
+            )
+        })?;
+        let (read_half, mut write_half) = stream.into_split();
+        let mut line = serde_json::to_string(request)?;
+        line.push('\n');
+        write_half.write_all(line.as_bytes()).await?;
+        write_half.flush().await?;
+
+        let mut reader = BufReader::new(read_half).lines();
+        match reader.next_line().await? {
+            Some(resp) => Ok(serde_json::from_str(&resp)?),
+            None => bail!("daemon closed the connection without replying"),
+        }
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "daemon did not reply within {}s — is it wedged?",
+            SEND_TIMEOUT.as_secs()
+        )
+    })?
 }
 
 /// Run the `tartarust-daemon` binary with `args`, inheriting stdio. Prefers a
 /// sibling binary next to this one, falling back to `PATH`.
-fn run_daemon(args: &[String]) -> Result<()> {
+fn run_daemon(args: &[OsString]) -> Result<()> {
     let program = sibling_daemon().unwrap_or_else(|| PathBuf::from("tartarust-daemon"));
     let status = ProcCommand::new(&program)
         .args(args)
@@ -487,4 +534,41 @@ fn sibling_daemon() -> Option<PathBuf> {
     let dir = exe.parent()?;
     let candidate = dir.join("tartarust-daemon");
     candidate.exists().then_some(candidate)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_accepts_plain_and_hash_prefixed() {
+        assert_eq!(parse_hex("a0b0c0").unwrap(), Rgb::new(0xA0, 0xB0, 0xC0));
+        assert_eq!(parse_hex("#FF0000").unwrap(), Rgb::new(0xFF, 0x00, 0x00));
+    }
+
+    #[test]
+    fn parse_hex_rejects_signs_and_non_hex() {
+        // `from_str_radix` alone would accept these as Rgb(1,2,3) / Rgb(10,11,12).
+        assert!(parse_hex("+1+2+3").is_err());
+        assert!(parse_hex("+A0B0C").is_err());
+        assert!(parse_hex("gg0000").is_err());
+        assert!(parse_hex("12345").is_err());
+        assert!(parse_hex("1234567").is_err());
+    }
+
+    #[test]
+    fn build_effect_rejects_color_for_colorless_effects() {
+        for effect in ["none", "spectrum", "wave"] {
+            assert!(build_effect(effect, Some("ff0000")).is_err(), "{effect}");
+            assert!(build_effect(effect, None).is_ok(), "{effect}");
+        }
+    }
+
+    #[test]
+    fn build_effect_consumes_color_where_it_applies() {
+        for effect in ["static", "reactive", "breathing", "starlight"] {
+            assert!(build_effect(effect, Some("ff0000")).is_ok(), "{effect}");
+        }
+        assert!(build_effect("bogus", None).is_err());
+    }
 }

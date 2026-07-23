@@ -34,7 +34,7 @@ repository = ""
 
 # Shared dependency palette. Member crates opt in with `dep = { workspace = true }`
 # so versions stay aligned across the workspace. Versions for device/UI-specific
-# crates (deku, evdev, hidapi, dioxus) are pinned as each milestone lands and the
+# crates (deku, evdev, nix, dioxus) are pinned as each milestone lands and the
 # research docs (docs/research/) confirm current versions.
 [workspace.dependencies]
 # error handling / logging

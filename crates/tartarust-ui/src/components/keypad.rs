@@ -5,7 +5,7 @@
 //! pressure (Calibration) — but selection and click-to-inspect work the same on
 //! all three. The main block is **19 keys in rows of 5/5/5/4** (numbers on top,
 //! no F-keys); the thumb cluster is the 8-way pad, scroll wheel, spacebar, and
-//! the analog thumb button.
+//! the (digital-only) thumb button.
 //!
 //! Two extra props serve the screens that compose it:
 //!   * `layer` — which bind layer this keypad edits (Customize renders TWO,
@@ -30,7 +30,7 @@ pub enum KeypadMode {
     Bind,
     /// Lighting: each cap glows in its effect/custom colour.
     Lighting,
-    /// Calibration: grid/space/thumb caps fill from the bottom by live analog
+    /// Calibration: grid/spacebar caps fill from the bottom by live analog
     /// pressure; clicking a configured cap anchors the actuation editor inside it.
     Pressure,
 }
@@ -77,9 +77,9 @@ pub fn Keypad(
     #[props(default = false)]
     analog_only: bool,
     /// Live per-key analog pressure (evdev name -> 0..255), driven by Calibration.
-    /// `None` renders exactly as a static keypad; `Some` fills the grid, spacebar
-    /// and thumb-button caps from the bottom. The 8-way pad and wheel never carry
-    /// pressure.
+    /// `None` renders exactly as a static keypad; `Some` fills the grid and
+    /// spacebar caps from the bottom. The 8-way pad, wheel, and thumb button are
+    /// digital-only and never carry pressure.
     pressures: Option<HashMap<String, u8>>,
     /// Calibration multi-select: pointer events per analog cap. When `Some`, a
     /// cap's normal single-select click is suppressed and Down/Enter/Up pointer
@@ -107,18 +107,12 @@ pub fn Keypad(
     let press_of = |key: KeyId| -> Option<u8> {
         pressures
             .as_ref()
-            .and_then(|m| key.evdev().and_then(|n| m.get(&n).copied()))
+            .and_then(|m| key.evdev().and_then(|n| m.get(n).copied()))
     };
-    let custom_of = |key: KeyId| key.evdev().is_some_and(|n| customized.contains(&n));
+    let custom_of = |key: KeyId| key.evdev().is_some_and(|n| customized.contains(n));
 
     let space_press = press_of(KeyId::Space);
-    let thumb_btn_press = press_of(KeyId::ThumbButton);
     let space_modal = if host(KeyId::Space) {
-        children.clone()
-    } else {
-        rsx! {}
-    };
-    let thumb_btn_modal = if host(KeyId::ThumbButton) {
         children.clone()
     } else {
         rsx! {}
@@ -149,7 +143,7 @@ pub fn Keypad(
                 }
             }
 
-            // Thumb cluster: 8-way pad, scroll wheel, spacebar, analog thumb button.
+            // Thumb cluster: 8-way pad, scroll wheel, spacebar, thumb button.
             // In `analog_only` mode (Calibration) only the spacebar — the one
             // analog cap here — is shown; the rest aren't analog, so they're hidden.
             div { class: "keypad-side",
@@ -163,7 +157,7 @@ pub fn Keypad(
                     custom: custom_of(KeyId::Space),
                 }
                 if !analog_only {
-                    ThumbButton { mode, layer, press: thumb_btn_press, modal: thumb_btn_modal }
+                    ThumbButton { mode, layer }
                 }
             }
             }
@@ -182,7 +176,7 @@ fn is_selected(s: &crate::model::AppState, key: KeyId, mode: KeypadMode, layer: 
 /// Toggle selection of a key: clicking an unselected key selects it (and, in Bind
 /// mode, records which layer's keypad it came from); clicking the ALREADY-selected
 /// key deselects it — closing the inspector / the Calibration actuation modal.
-fn select(store: &mut Signal<crate::model::AppState>, key: KeyId, mode: KeypadMode, layer: Layer) {
+fn select(mut store: Signal<crate::model::AppState>, key: KeyId, mode: KeypadMode, layer: Layer) {
     use dioxus::prelude::WritableExt;
     store.with_mut(|s| {
         let already = s.selected == Some(key) && (mode != KeypadMode::Bind || s.layer == layer);
@@ -209,7 +203,7 @@ fn Cap(
     #[props(default = false)] multi: bool,
     #[props(default = false)] custom: bool,
 ) -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let s = store.read();
     let selected = is_selected(&s, key_id, mode, layer);
 
@@ -257,7 +251,7 @@ fn Cap(
                 // When the host drives multi-select (Calibration), the pointer
                 // handlers below own selection — a plain click is resolved there.
                 if on_cap_pointer.is_none() {
-                    select(&mut store, key_id, mode, layer);
+                    select(store, key_id, mode, layer);
                 }
             },
             onmousedown: move |e| cap_pointer(&on_cap_pointer, key_id, CapPhase::Down, &e),
@@ -299,7 +293,7 @@ fn cap_pointer(
 /// `Four`-way mode the diagonals (NW/NE/SW/SE) are hidden, leaving N/E/S/W.
 #[component]
 fn Thumbpad(mode: KeypadMode, layer: Layer) -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let four = store.read().profile.thumb_axis_mode == ThumbAxisMode::Four;
     let hub_label = if four { "4-WAY" } else { "8-WAY" };
 
@@ -331,7 +325,7 @@ fn Thumbpad(mode: KeypadMode, layer: Layer) -> Element {
                     title: "Toggle 4-way / 8-way thumb stick",
                     onclick: move |_| {
                         let next = if four { ThumbAxisMode::Eight } else { ThumbAxisMode::Four };
-                        set_axis_mode(&mut store, next);
+                        set_axis_mode(store, next);
                     },
                     "{hub_label}"
                 }
@@ -344,7 +338,7 @@ fn Thumbpad(mode: KeypadMode, layer: Layer) -> Element {
 
 /// Flip the active profile's thumb axis mode: optimistic local write (clearing a
 /// now-hidden diagonal selection) plus a persist to the daemon.
-fn set_axis_mode(store: &mut Signal<crate::model::AppState>, mode: ThumbAxisMode) {
+fn set_axis_mode(mut store: Signal<crate::model::AppState>, mode: ThumbAxisMode) {
     use dioxus::prelude::WritableExt;
     // Name the profile before the write to keep the borrow simple.
     let profile = store.read().active_profile_name();
@@ -359,7 +353,7 @@ fn set_axis_mode(store: &mut Signal<crate::model::AppState>, mode: ThumbAxisMode
             s.selected = None;
         }
     });
-    crate::ipc::set_thumb_axis_mode(*store, profile, mode);
+    crate::ipc::set_thumb_axis_mode(store, profile, mode);
 }
 
 #[component]
@@ -370,7 +364,7 @@ fn ThumbDirCap(
     mode: KeypadMode,
     layer: Layer,
 ) -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let key = KeyId::Thumb(dir);
     let s = store.read();
     let selected = is_selected(&s, key, mode, layer);
@@ -412,7 +406,7 @@ fn ThumbDirCap(
             style: "{style}",
             onclick: move |e| {
                 e.stop_propagation();
-                select(&mut store, key, mode, layer);
+                select(store, key, mode, layer);
             },
             "{content}"
         }
@@ -421,38 +415,41 @@ fn ThumbDirCap(
 
 #[component]
 fn Wheel(mode: KeypadMode, layer: Layer) -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let s = store.read();
     let up_sel = is_selected(&s, KeyId::Wheel(WheelDir::Up), mode, layer);
     let down_sel = is_selected(&s, KeyId::Wheel(WheelDir::Down), mode, layer);
-    let wheel_style = if mode == KeypadMode::Lighting {
-        format!("background:{};", lit_color(&s, KeyId::Wheel(WheelDir::Up)))
+    // In Lighting mode the wheel body takes the effect colour and the segment
+    // glyphs a luminance-matched legend colour — but NEVER on a selected
+    // segment: an inline `color` would out-cascade `.w-seg.selected`'s rust,
+    // which is the wheel's only selection feedback.
+    let (wheel_style, seg_style) = if mode == KeypadMode::Lighting {
+        let c = lit_color(&s, KeyId::Wheel(WheelDir::Up));
+        let seg = format!("{};", lit_legend_style(&c));
+        (format!("background:{c};"), seg)
     } else {
-        String::new()
+        (String::new(), String::new())
     };
-    let seg_style = if mode == KeypadMode::Lighting {
-        "color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);".to_string()
-    } else {
-        String::new()
-    };
+    let up_style = if up_sel { "" } else { seg_style.as_str() };
+    let down_style = if down_sel { "" } else { seg_style.as_str() };
     drop(s);
     rsx! {
         div { class: "wheel", style: "{wheel_style}",
             div {
                 class: if up_sel { "w-seg selected" } else { "w-seg" },
-                style: "{seg_style}",
+                style: "{up_style}",
                 onclick: move |e| {
                     e.stop_propagation();
-                    select(&mut store, KeyId::Wheel(WheelDir::Up), mode, layer);
+                    select(store, KeyId::Wheel(WheelDir::Up), mode, layer);
                 },
                 "▲"
             }
             div {
                 class: if down_sel { "w-seg selected" } else { "w-seg" },
-                style: "{seg_style}",
+                style: "{down_style}",
                 onclick: move |e| {
                     e.stop_propagation();
-                    select(&mut store, KeyId::Wheel(WheelDir::Down), mode, layer);
+                    select(store, KeyId::Wheel(WheelDir::Down), mode, layer);
                 },
                 "▼"
             }
@@ -470,7 +467,7 @@ fn Space(
     #[props(default = false)] multi: bool,
     #[props(default = false)] custom: bool,
 ) -> Element {
-    let mut store = use_store();
+    let store = use_store();
     let s = store.read();
     let selected = is_selected(&s, KeyId::Space, mode, layer);
     let mut classes = String::from("spacebar");
@@ -505,7 +502,7 @@ fn Space(
             onclick: move |e| {
                 e.stop_propagation();
                 if on_cap_pointer.is_none() {
-                    select(&mut store, KeyId::Space, mode, layer);
+                    select(store, KeyId::Space, mode, layer);
                 }
             },
             onmousedown: move |e| cap_pointer(&on_cap_pointer, KeyId::Space, CapPhase::Down, &e),
@@ -527,10 +524,12 @@ fn Space(
     }
 }
 
-/// The thumb button (emits `KEY_LEFTALT`); digital-only — no analog pressure byte.
+/// The thumb button (emits `KEY_LEFTALT`); digital-only — no analog pressure
+/// byte, so it carries neither a pressure fill nor the Calibration popover
+/// (Calibration hides it entirely via `analog_only`).
 #[component]
-fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element) -> Element {
-    let mut store = use_store();
+fn ThumbButton(mode: KeypadMode, layer: Layer) -> Element {
+    let store = use_store();
     let s = store.read();
     let selected = is_selected(&s, KeyId::ThumbButton, mode, layer);
     let mut classes = String::from("thumb-button");
@@ -549,32 +548,104 @@ fn ThumbButton(mode: KeypadMode, layer: Layer, press: Option<u8>, modal: Element
     } else {
         "ALT".to_string()
     };
-    let mut style = if mode == KeypadMode::Lighting {
+    let style = if mode == KeypadMode::Lighting {
         lit_face_style(&lit_color(&s, KeyId::ThumbButton))
     } else {
         String::new()
     };
     drop(s);
-    push_pressure_fill(press, &mut classes, &mut style);
     rsx! {
         div {
             class: "{classes}",
             style: "{style}",
             onclick: move |e| {
                 e.stop_propagation();
-                select(&mut store, KeyId::ThumbButton, mode, layer);
+                select(store, KeyId::ThumbButton, mode, layer);
             },
             span { class: "tb-label", "{label}" }
-            {modal}
         }
     }
 }
 
 /// The lit-face inline style for Lighting mode: the cap face takes the key's
-/// colour, with a dark, subtly-lifted legend that stays legible on any hue.
+/// colour, with the legend colour picked by the face's luminance so it stays
+/// legible on any hue — dark ink on bright faces, light ink on dim ones (so an
+/// unlit / near-black face, e.g. `Effect::None` or brightness 0, keeps a
+/// readable legend instead of black-on-black). Deliberately sets NO inline
+/// `border-color`: an inline value out-cascades the stylesheet's `.selected`
+/// border, erasing selection feedback — the default border also keeps a dark
+/// face's outline visible against the deck.
 fn lit_face_style(c: &str) -> String {
-    format!(
-        "background:{c};color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25);border-color:{c};"
+    format!("background:{c};{};", lit_legend_style(c))
+}
+
+/// Inline legend colour + lift shadow for text sitting on face colour `c`.
+fn lit_legend_style(c: &str) -> &'static str {
+    if face_is_bright(c) {
+        "color:#0a0b0c;text-shadow:0 1px 1px rgba(255,255,255,0.25)"
+    } else {
+        "color:#d9d6cf;text-shadow:0 1px 1px rgba(0,0,0,0.45)"
+    }
+}
+
+/// Whether a face colour reads as bright (dark legend) or dark (light legend).
+/// Parses the formats [`lit_color`] emits — `#rrggbb`, `rgb(r,g,b)`, and
+/// `hsl(h, s%, l%)` — and compares perceived luminance against a mid threshold.
+/// Anything unparsable is treated as dark: a light legend is the safe default
+/// on this dark deck.
+fn face_is_bright(c: &str) -> bool {
+    const THRESHOLD: f32 = 100.0; // of 0..255 weighted luma
+    let c = c.trim();
+    if let Some(hex) = c.strip_prefix('#') {
+        if hex.len() == 6
+            && let Ok(v) = u32::from_str_radix(hex, 16)
+        {
+            return luma((v >> 16) as u8, (v >> 8) as u8, v as u8) >= THRESHOLD;
+        }
+        return false;
+    }
+    if let Some(body) = c.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
+        let mut it = body.split(',').map(|p| p.trim().parse::<u8>());
+        if let (Some(Ok(r)), Some(Ok(g)), Some(Ok(b))) = (it.next(), it.next(), it.next()) {
+            return luma(r, g, b) >= THRESHOLD;
+        }
+        return false;
+    }
+    if let Some(body) = c.strip_prefix("hsl(").and_then(|s| s.strip_suffix(')')) {
+        let mut it = body
+            .split(',')
+            .map(|p| p.trim().trim_end_matches('%').parse::<f32>());
+        if let (Some(Ok(h)), Some(Ok(s)), Some(Ok(l))) = (it.next(), it.next(), it.next()) {
+            let (r, g, b) = hsl_to_rgb(h, s / 100.0, l / 100.0);
+            return luma(r, g, b) >= THRESHOLD;
+        }
+    }
+    false
+}
+
+/// Perceived (Rec. 601 weighted) luminance of an sRGB colour, 0..255.
+fn luma(r: u8, g: u8, b: u8) -> f32 {
+    0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32
+}
+
+/// Standard HSL -> RGB (h in degrees, s/l in 0..1), for the luminance check.
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    (
+        ((r1 + m) * 255.0).round() as u8,
+        ((g1 + m) * 255.0).round() as u8,
+        ((b1 + m) * 255.0).round() as u8,
     )
 }
 
@@ -642,4 +713,52 @@ fn lit_color(s: &crate::model::AppState, key: KeyId) -> String {
 
 fn hsl_css(h: f32, dim: f32) -> String {
     format!("hsl({h:.0}, 90%, {}%)", (50.0 * dim).max(8.0) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The lit-face legend must flip by face luminance in every colour format
+    //! `lit_color` emits — the black-on-black regression (Effect::None,
+    //! brightness 0, Custom on non-grid caps) is pinned here.
+
+    use super::*;
+
+    #[test]
+    fn near_black_faces_get_a_light_legend() {
+        // Effect::None / Custom-non-grid faces, and brightness dialed to 0.
+        assert!(!face_is_bright("#0e0f10"));
+        assert!(!face_is_bright("#101418"));
+        assert!(!face_is_bright("rgb(0,0,0)"));
+        assert!(lit_face_style("#0e0f10").contains("color:#d9d6cf"));
+    }
+
+    #[test]
+    fn bright_faces_get_a_dark_legend() {
+        // Razer green at ~75% brightness (the mock default), and plain white.
+        assert!(face_is_bright("rgb(51,160,33)"));
+        assert!(face_is_bright("#ffffff"));
+        assert!(lit_face_style("rgb(51,160,33)").contains("color:#0a0b0c"));
+    }
+
+    #[test]
+    fn hsl_faces_are_judged_by_real_luminance_not_lightness() {
+        // Same 50% lightness: green reads bright, blue reads dark.
+        assert!(face_is_bright("hsl(120, 90%, 50%)"));
+        assert!(!face_is_bright("hsl(240, 90%, 50%)"));
+        // The dimmed floor `hsl_css` emits at brightness 0 stays dark.
+        assert!(!face_is_bright(&hsl_css(120.0, 0.0)));
+    }
+
+    #[test]
+    fn unparsable_colours_default_to_dark() {
+        assert!(!face_is_bright("var(--rust)"));
+        assert!(!face_is_bright("#abc"));
+    }
+
+    #[test]
+    fn lit_face_style_never_sets_border_color() {
+        // An inline border-color would out-cascade the `.selected` border,
+        // erasing selection feedback (the review-#11 regression).
+        assert!(!lit_face_style("rgb(51,160,33)").contains("border-color"));
+    }
 }

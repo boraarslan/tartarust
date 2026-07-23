@@ -25,6 +25,7 @@ use std::thread;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use evdev::{Device, EventSummary};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::analog_source;
 use crate::appfocus;
@@ -121,12 +122,39 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
     // drop `output` whose `Drop` joins the output thread — and the engine thread
     // holds an `out_tx` clone, so that join would DEADLOCK while still holding
     // the EVIOCGRAB, locking the user out of the keypad. By front-loading the
-    // tokio-runtime build and the socket bind, any failure happens while nothing
-    // is grabbed and no engine thread exists, so the handles drop cleanly.
+    // tokio-runtime build, the signal registration, and the socket bind, any
+    // failure happens while nothing is grabbed and no engine thread exists, so
+    // the handles drop cleanly.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("building tokio runtime")?;
+
+    // Install the shutdown signal handlers NOW — before the DRIVER-mode entry
+    // and the grabs below. `tokio::signal::unix::signal()` registers the OS
+    // handler at creation time (it needs the runtime context, hence
+    // `rt.enter()`), so a SIGINT/SIGTERM/SIGHUP arriving anywhere in the
+    // remaining startup — device discovery, grabs, the awaited D-Bus tray
+    // registration — is QUEUED and drained by `wait_for_shutdown_signal`'s
+    // select, taking the normal NORMAL-restore shutdown path, instead of
+    // terminating the process at the default disposition. That default-
+    // disposition death runs no Drop, and in analog mode the device is already
+    // in DRIVER mode from the very start of setup: fd-close releases a grab
+    // but does NOT exit DRIVER mode (see [`ANALOG_ARMED`]), so the keypad
+    // would stay mute until replug. `SignalKind::interrupt()` replaces
+    // `tokio::signal::ctrl_c()` because `ctrl_c` only installs its handler
+    // when first polled — too late for this window. Tradeoff: a SIGTERM during
+    // a HUNG startup no longer kills the process — it is honored once the
+    // select is reached (SIGKILL remains the escape hatch).
+    let (mut sig_int, mut sig_term, mut sig_hup) = {
+        let _rt_guard = rt.enter();
+        (
+            signal(SignalKind::interrupt()).context("installing SIGINT handler")?,
+            signal(SignalKind::terminate()).context("installing SIGTERM handler")?,
+            signal(SignalKind::hangup()).context("installing SIGHUP handler")?,
+        )
+    };
+
     let socket = tartarust_ipc::socket_path();
     // `_socket_lock` is the single-instance startup lock; it must stay alive for
     // the daemon's whole lifetime (the kernel releases it on process exit).
@@ -398,7 +426,7 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
             None
         };
 
-        wait_for_shutdown_signal(&mut quit_rx).await;
+        wait_for_shutdown_signal(&mut sig_int, &mut sig_term, &mut sig_hup, &mut quit_rx).await;
     });
 
     // Shutdown. In ANALOG mode we MUST restore NORMAL before `process::exit`
@@ -465,18 +493,23 @@ fn install_grab_safety_panic_hook() {
 }
 
 /// Await SIGINT, SIGTERM, SIGHUP, or a tray "Quit" request — whichever comes
-/// first. SIGHUP matters: closing the terminal the daemon was launched from
-/// must take this same shutdown path — at the default disposition it would kill
-/// the process outright, skipping the NORMAL-mode restore and stranding an
-/// analog-mode keypad in DRIVER mode (mute) until replug.
-async fn wait_for_shutdown_signal(quit_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
-    let mut hup = signal(SignalKind::hangup()).expect("SIGHUP handler");
+/// first. The three signal streams are created — and their OS handlers
+/// installed — by `run` right after the runtime is built, BEFORE any grab or
+/// DRIVER-mode entry, so a signal delivered mid-startup is queued and drained
+/// here instead of killing the process at the default disposition (which skips
+/// every Drop and would strand an analog-mode keypad in DRIVER mode — mute
+/// until replug). SIGHUP matters: closing the terminal the daemon was launched
+/// from must take this same shutdown path.
+async fn wait_for_shutdown_signal(
+    sig_int: &mut Signal,
+    sig_term: &mut Signal,
+    sig_hup: &mut Signal,
+    quit_rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-        _ = hup.recv() => {}
+        _ = sig_int.recv() => {}
+        _ = sig_term.recv() => {}
+        _ = sig_hup.recv() => {}
         // Tray "Quit". `Some(())` (NOT `None`) so that a closed channel — the
         // tray was disabled or failed to start, dropping the only sender —
         // *disables* this branch rather than firing it, leaving us waiting on the

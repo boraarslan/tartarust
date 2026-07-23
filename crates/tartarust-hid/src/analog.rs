@@ -167,17 +167,26 @@ impl Drop for DriverModeGuard {
 /// while the process is already tearing down. Returns whether NORMAL was
 /// confirmed; the caller logs and aborts regardless.
 pub fn restore_normal_best_effort() -> bool {
-    let Ok(node) = discover_control_node() else {
-        return false;
-    };
-    let Ok(transport) = Transport::open_path(&node) else {
-        return false;
-    };
-    let _ = transport.command(&device::set_device_mode(DEVICE_MODE_NORMAL));
-    matches!(
-        transport.command(&device::get_device_mode()),
-        Ok(resp) if resp.arguments[0] == DEVICE_MODE_NORMAL
-    )
+    try_restore_normal_once().is_some()
+}
+
+/// One attempt to put the device back in NORMAL mode from scratch: re-discover
+/// the control node, open a fresh transport, best-effort send
+/// `set_device_mode(NORMAL)`, and confirm `get_device_mode` arg[0] == NORMAL.
+/// Both commands go through [`command_with_epipe_retry`] (they are idempotent),
+/// so a single transient EPIPE stall does not fail the attempt — that retry is
+/// short and bounded (one 20ms pause per command), which keeps this safe for
+/// the pre-abort path too. Returns the node path on confirmed success so
+/// callers can log it.
+fn try_restore_normal_once() -> Option<PathBuf> {
+    let node = discover_control_node().ok()?;
+    let transport = Transport::open_path(&node).ok()?;
+    // Best-effort send (a fresh reset already lands in NORMAL, but assert it).
+    let _ = command_with_epipe_retry(&transport, &device::set_device_mode(DEVICE_MODE_NORMAL));
+    match command_with_epipe_retry(&transport, &device::get_device_mode()) {
+        Ok(resp) if resp.arguments[0] == DEVICE_MODE_NORMAL => Some(node),
+        _ => None,
+    }
 }
 
 /// Re-discover and reopen the control node, send NORMAL, and confirm arg[0]==0.
@@ -187,17 +196,7 @@ fn restore_normal_via_reopen() -> bool {
     let deadline = Instant::now() + REOPEN_DEADLINE;
     while Instant::now() < deadline {
         sleep(REOPEN_POLL);
-        let Ok(node) = discover_control_node() else {
-            continue; // node not back yet
-        };
-        let Ok(transport) = Transport::open_path(&node) else {
-            continue; // reappeared but not yet openable
-        };
-        // Best-effort resend (a fresh reset already lands in NORMAL, but assert it).
-        let _ = transport.command(&device::set_device_mode(DEVICE_MODE_NORMAL));
-        if let Ok(resp) = transport.command(&device::get_device_mode())
-            && resp.arguments[0] == DEVICE_MODE_NORMAL
-        {
+        if let Some(node) = try_restore_normal_once() {
             tracing::info!(node = %node.display(), "restored device mode: NORMAL after reopen");
             return true;
         }
@@ -276,11 +275,23 @@ impl AnalogReader {
     /// to `Ok(None)` so an event loop simply re-checks its own stop condition and
     /// loops, unwinding through Drop on the next iteration. A signal is never an
     /// error here.
+    ///
+    /// `timeout` has `poll(2)`'s millisecond granularity: a non-zero
+    /// sub-millisecond timeout rounds **up** to 1ms (never down to a
+    /// non-blocking poll), and the wait is capped at `i32::MAX` ms (~24.8 days).
     pub fn poll(&mut self, timeout: Duration) -> Result<Option<AnalogFrame>, HidError> {
         let borrowed = self.input.as_fd();
         let mut fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
-        let millis = timeout.as_millis().min(u16::MAX as u128) as u16;
-        match nix::poll::poll(&mut fds, PollTimeout::from(millis)) {
+        // Clamp to poll(2)'s real timeout range (i32 ms) and round a non-zero
+        // sub-ms timeout up to 1ms so it still blocks instead of busy-spinning.
+        let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let millis = if millis == 0 && !timeout.is_zero() {
+            1
+        } else {
+            millis
+        };
+        let poll_timeout = PollTimeout::try_from(millis).unwrap_or(PollTimeout::MAX);
+        match nix::poll::poll(&mut fds, poll_timeout) {
             Ok(0) => return Ok(None), // timed out, no data
             Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => return Ok(None), // signal; let caller re-check

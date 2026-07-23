@@ -55,8 +55,8 @@ cargo install --path .       # installs tartarust-daemon, tartarust, tartarust-u
 The bin targets live in the root `tartarust` package (thin shims over the member
 crates), so a single `cargo install` ships all three binaries.
 
-System deps (Arch): `webkit2gtk-4.1 gtk3 libusb hidapi` plus `cage` + `grim` for
-headless UI dev.
+System deps (Arch): `webkit2gtk-4.1 gtk3` plus `cage` + `grim` for headless UI
+dev.
 
 ## Install
 
@@ -113,7 +113,7 @@ tartarust run [--config PATH] # config defaults to $XDG_CONFIG_HOME/tartarust/co
 tartarust profile list
 tartarust profile switch "MMO Grind"
 tartarust brightness 200
-tartarust autoswitch on
+tartarust auto-switch on
 
 # Move profiles between machines / installs (bundles include referenced macros)
 tartarust profile export "MMO Grind" -o grind.toml
@@ -141,10 +141,10 @@ Never run `dx serve` or the UI binary bare. See
 
 ## Versioning
 
-The whole workspace ships one version, currently **0.1.1**. It is defined once in
-`[workspace.package]` in the root `Cargo.toml`; the root package and all six
-member crates inherit it via `version.workspace = true`. Bump that single field
-to move everything together. See [`CLAUDE.md`](CLAUDE.md) for the policy.
+The whole workspace ships one version, defined once in `[workspace.package]` in
+the root `Cargo.toml`; the root package and all six member crates inherit it via
+`version.workspace = true`. Bump that single field to move everything together.
+See [`CLAUDE.md`](CLAUDE.md) for the policy.
 
 ## Status
 

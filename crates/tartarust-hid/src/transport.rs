@@ -153,7 +153,6 @@ impl Transport {
     ///   [`HidError::ResponseMismatch`].
     pub fn command(&self, request: &RazerReport) -> Result<RazerReport, HidError> {
         let mut last_status: Option<u8> = None;
-        let mut mismatched = false;
 
         for attempt in 1..=MAX_ATTEMPTS {
             if attempt > 1 {
@@ -177,7 +176,6 @@ impl Transport {
                     resp_status = response.status,
                     "response header did not echo request (possible framing offset error)"
                 );
-                mismatched = true;
                 continue;
             }
 
@@ -214,13 +212,10 @@ impl Transport {
                 status,
                 attempts: MAX_ATTEMPTS,
             })
-        } else if mismatched {
-            Err(HidError::ResponseMismatch {
-                attempts: MAX_ATTEMPTS,
-            })
         } else {
-            // Should be unreachable: every attempt either returns, sets
-            // last_status, or sets mismatched.
+            // No status was ever recorded, so every failed attempt was a
+            // header mismatch (each iteration returns, propagates an error,
+            // sets `last_status`, or hits the mismatch `continue`).
             Err(HidError::ResponseMismatch {
                 attempts: MAX_ATTEMPTS,
             })

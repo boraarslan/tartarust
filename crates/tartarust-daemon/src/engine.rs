@@ -28,7 +28,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use evdev::{InputEvent, KeyCode, KeyEvent};
 
-use tartarust_ipc::model::{BindAction, Layer, LightingState, Macro, Profile, ThumbAxisMode};
+use tartarust_ipc::model::{
+    BindAction, Layer, LightingState, Macro, MacroStep, Profile, ThumbAxisMode,
+};
 use tartarust_ipc::{
     DaemonStatus, DeviceInfo, PROTOCOL_VERSION, ProfileList, ProfileSummary, Request, Response,
 };
@@ -129,7 +131,20 @@ pub struct Engine {
 
 impl Engine {
     /// Build an engine from a loaded [`Config`], starting on its default profile.
-    pub fn new(config: Config) -> Self {
+    ///
+    /// The profiles/macros MAP KEYS are the authoritative identities — every
+    /// lookup, list, and auto-switch match keys off them. Hand-written configs
+    /// may omit the inline `name` field entirely (`#[serde(default)]` → `""`)
+    /// or leave it stale, so it is stamped from the map key here, where the
+    /// engine takes ownership of the config. This happens BEFORE `saved` is
+    /// cloned, so a freshly loaded engine still reads as clean.
+    pub fn new(mut config: Config) -> Self {
+        for (key, profile) in config.profiles.iter_mut() {
+            profile.name = key.clone();
+        }
+        for (key, m) in config.macros.iter_mut() {
+            m.name = key.clone();
+        }
         let saved = config.clone();
         Engine {
             active_profile: config.default_profile.clone(),
@@ -581,10 +596,16 @@ impl Engine {
                 Some(m) => (Response::Macro(m.clone()), vec![]),
                 None => (err(format!("no such macro: {name}")), vec![]),
             },
-            Request::SaveMacro { r#macro } => {
-                self.macros.insert(r#macro.name.clone(), r#macro);
-                (Response::Ack, vec![])
-            }
+            Request::SaveMacro { r#macro } => match validate_macro(&r#macro) {
+                // Same boundary rule as SetBind/SetActuation: a bad name or
+                // step key is a clear error here, not a macro that silently
+                // no-ops (or leaves a key stuck) at play time.
+                Err(message) => (err(message), vec![]),
+                Ok(()) => {
+                    self.macros.insert(r#macro.name.clone(), r#macro);
+                    (Response::Ack, vec![])
+                }
+            },
             Request::DeleteMacro { name } => {
                 if self.macros.remove(&name).is_some() {
                     (Response::Ack, vec![])
@@ -629,9 +650,14 @@ impl Engine {
             .iter()
             .filter_map(|(index_str, k)| {
                 // The on-disk map is keyed by the byte index as a string; surface
-                // a numeric index, skipping any malformed key (same tolerance as
-                // the actuator build).
+                // a numeric index, skipping any malformed key or out-of-range
+                // index (same tolerance as the actuator build, which drops both
+                // — so a hand-edited entry the actuator can never fire, and
+                // SetActuation rejects, is not presented as configured).
                 let index = index_str.parse::<u8>().ok()?;
+                if (index as usize) >= tartarust_protocol::ANALOG_KEY_COUNT {
+                    return None;
+                }
                 Some(tartarust_ipc::AnalogKeyConfig {
                     index,
                     key: k.key.clone(),
@@ -723,6 +749,13 @@ impl Engine {
     }
 
     fn create_profile(&mut self, name: String) -> (Response, Vec<DeviceCmd>) {
+        // Empty names are invalid — the rule `import_profile` already
+        // enforces. An empty-named profile lists blank in every client,
+        // persists as a quoted-empty TOML key, and exports a bundle every
+        // importer rejects.
+        if name.is_empty() {
+            return (err("profile name must not be empty".into()), vec![]);
+        }
         if self.profiles.contains_key(&name) {
             return (err(format!("profile already exists: {name}")), vec![]);
         }
@@ -734,6 +767,10 @@ impl Engine {
     /// new name. The app link is deliberately NOT copied: two profiles linked to
     /// the same app would make auto-switch ambiguous.
     fn duplicate_profile(&mut self, from: String, to: String) -> (Response, Vec<DeviceCmd>) {
+        // Same empty-name rule as `create_profile` / `import_profile`.
+        if to.is_empty() {
+            return (err("profile name must not be empty".into()), vec![]);
+        }
         let Some(src) = self.profiles.get(&from) else {
             return (err(format!("no such profile: {from}")), vec![]);
         };
@@ -780,9 +817,11 @@ impl Engine {
     /// state changes. Bundled macros identical to existing ones are a no-op;
     /// a same-name macro with different steps is a conflict unless `overwrite`
     /// (two conflicting same-name macros WITHIN the bundle are malformed and
-    /// always rejected). Bind keys get the same validate-and-canonicalize
-    /// treatment as [`Engine::set_bind`] — an unknown key name is a clear error,
-    /// not a silently dead bind. A `linked_app` another profile already claims
+    /// always rejected), and every bundled macro passes [`validate_macro`],
+    /// the same boundary check as `SaveMacro`. Bind keys get the same
+    /// validate-and-canonicalize treatment as [`Engine::set_bind`] — an
+    /// unknown key name is a clear error, not a silently dead bind. A
+    /// `linked_app` another profile already claims
     /// is cleared (the same ambiguity guard as `duplicate_profile`). Overwriting
     /// the ACTIVE profile re-applies its lighting so the change is live.
     fn import_profile(
@@ -812,6 +851,14 @@ impl Engine {
                         vec![],
                     );
                 }
+            }
+        }
+        // Bundled macros get the same boundary validation as `SaveMacro` — a
+        // typo'd step key (or empty name) rejects the import, before any state
+        // changes, instead of landing as a silently dead macro.
+        for m in &macros {
+            if let Err(message) = validate_macro(m) {
+                return (err(message), vec![]);
             }
         }
         if !overwrite {
@@ -893,6 +940,11 @@ impl Engine {
     }
 
     fn rename_profile(&mut self, from: String, to: String) -> (Response, Vec<DeviceCmd>) {
+        // Same empty-name rule as `create_profile` / `import_profile` — this
+        // path could otherwise migrate even the active/default profile onto "".
+        if to.is_empty() {
+            return (err("profile name must not be empty".into()), vec![]);
+        }
         if !self.profiles.contains_key(&from) {
             return (err(format!("no such profile: {from}")), vec![]);
         }
@@ -1060,6 +1112,29 @@ pub(crate) fn parse_key(name: &str) -> Option<KeyCode> {
     name.parse::<KeyCode>().ok()
 }
 
+/// Boundary validation shared by `SaveMacro` and `ImportProfile`: the name
+/// must be non-empty (it is the map key binds reference), delays must satisfy
+/// the contract crate's [`Macro::validate`] cap (persistence is whole-file
+/// TOML, so one `ms > i64::MAX` delay would wedge EVERY subsequent save), and
+/// every Press/Release step must name a real evdev key. Macro playback
+/// (`lower`) silently drops unknown steps with only a daemon-side warn — so
+/// without this check a typo'd step becomes a silently dead macro, or worse, a
+/// valid Press whose typo'd Release leaves the key stuck on the virtual device.
+fn validate_macro(m: &Macro) -> Result<(), String> {
+    if m.name.is_empty() {
+        return Err("macro name must not be empty".into());
+    }
+    m.validate()?;
+    for step in &m.steps {
+        if let MacroStep::Press { key } | MacroStep::Release { key } = step
+            && parse_key(key).is_none()
+        {
+            return Err(format!("unknown key name in macro step: {key}"));
+        }
+    }
+    Ok(())
+}
+
 fn err(message: String) -> Response {
     Response::Error { message }
 }
@@ -1071,6 +1146,24 @@ mod tests {
     use std::collections::BTreeMap;
     use tartarust_ipc::model::{Effect, LightingState, MacroStep, Rgb};
 
+    /// The shared [`Config`] skeleton every engine test builds on: the given
+    /// profiles (keyed by their `name`) + startup default, auto-switch on,
+    /// digital input, empty macros. Tests needing a different
+    /// `auto_switch`/`input_mode`/`analog` tweak the returned value before
+    /// `Engine::new`.
+    fn config_with(default: &str, profiles: Vec<Profile>) -> Config {
+        let profiles = profiles.into_iter().map(|p| (p.name.clone(), p)).collect();
+        Config {
+            default_profile: default.to_string(),
+            auto_switch: true,
+            tray: true,
+            input_mode: InputMode::Digital,
+            analog: AnalogConfig::default(),
+            profiles,
+            macros: BTreeMap::new(),
+        }
+    }
+
     /// Build a single-profile config from base + hypershift binds. To set a
     /// Hypershift trigger, include `("KEY_X", BindAction::Hypershift)` in `base`.
     fn cfg(base: Vec<(&str, BindAction)>, hyper: Vec<(&str, BindAction)>) -> Config {
@@ -1081,17 +1174,7 @@ mod tests {
         for (key, action) in hyper {
             profile.hypershift.insert(key.to_string(), action);
         }
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".to_string(), profile);
-        Config {
-            default_profile: "default".to_string(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        }
+        config_with("default", vec![profile])
     }
 
     fn key_action(names: &[&str]) -> BindAction {
@@ -1222,18 +1305,7 @@ mod tests {
         );
         // p2 does NOT bind KEY_LEFTALT to Hypershift at all.
         let p2 = Profile::new("p2");
-        let mut profiles = BTreeMap::new();
-        profiles.insert("p1".into(), p1);
-        profiles.insert("p2".into(), p2);
-        let mut e = Engine::new(Config {
-            default_profile: "p1".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        });
+        let mut e = Engine::new(config_with("p1", vec![p1, p2]));
 
         e.handle_key(KeyCode::KEY_LEFTALT, 1); // trigger down -> layer active
         assert!(e.hypershift_active());
@@ -1332,19 +1404,7 @@ mod tests {
         p1.base.insert("KEY_A".into(), key_action(&["KEY_1"]));
         let mut p2 = Profile::new("p2");
         p2.base.insert("KEY_A".into(), key_action(&["KEY_2"]));
-        let mut profiles = BTreeMap::new();
-        profiles.insert("p1".into(), p1);
-        profiles.insert("p2".into(), p2);
-        let config = Config {
-            default_profile: "p1".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        };
-        let mut e = Engine::new(config);
+        let mut e = Engine::new(config_with("p1", vec![p1, p2]));
 
         assert_eq!(
             keys(&e.handle_key(KeyCode::KEY_A, 1)),
@@ -1374,18 +1434,7 @@ mod tests {
             },
             brightness: 100,
         };
-        let mut profiles = BTreeMap::new();
-        profiles.insert("p1".into(), p1);
-        profiles.insert("p2".into(), p2);
-        let mut e = Engine::new(Config {
-            default_profile: "p1".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        });
+        let mut e = Engine::new(config_with("p1", vec![p1, p2]));
         let out = e.handle_key(KeyCode::KEY_A, 1);
         assert_eq!(e.active_profile(), "p2");
         // A DeviceCmd applying p2's lighting must be among the commands.
@@ -1407,17 +1456,7 @@ mod tests {
         for (key, action) in base {
             profile.base.insert(key.to_string(), action);
         }
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".to_string(), profile);
-        Engine::new(Config {
-            default_profile: "default".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        })
+        Engine::new(config_with("default", vec![profile]))
     }
 
     #[test]
@@ -1535,7 +1574,7 @@ mod tests {
 
     #[test]
     fn set_profile_linked_app_sets_and_clears() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         e.apply(Request::CreateProfile { name: "fps".into() }, "t");
         let (resp, _) = e.apply(
             Request::SetProfileLinkedApp {
@@ -1572,7 +1611,7 @@ mod tests {
 
     #[test]
     fn set_default_profile_validates_and_persists() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         e.apply(Request::CreateProfile { name: "fps".into() }, "t");
         // Switching the configured default does not move the live active profile.
         let (resp, _) = e.apply(Request::SetDefaultProfile { name: "fps".into() }, "t");
@@ -1599,23 +1638,13 @@ mod tests {
 
     // ---- IPC apply() tests ----
 
-    fn two_profile_engine() -> Engine {
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".to_string(), Profile::new("default"));
-        Engine::new(Config {
-            default_profile: "default".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        })
+    fn single_profile_engine() -> Engine {
+        Engine::new(config_with("default", vec![Profile::new("default")]))
     }
 
     #[test]
     fn create_rename_delete_profile() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         assert_eq!(
             e.apply(Request::CreateProfile { name: "fps".into() }, "t")
                 .0,
@@ -1661,9 +1690,47 @@ mod tests {
         ));
     }
 
+    /// Empty profile names are rejected at every path that can mint one — the
+    /// same rule `import_profile` enforces. Without the guards, "" would list
+    /// blank in clients, persist as a quoted-empty TOML key, and (via rename)
+    /// could even migrate the active/default profile onto the empty name.
+    #[test]
+    fn create_rename_duplicate_reject_empty_profile_names() {
+        let mut e = single_profile_engine();
+        assert!(matches!(
+            e.apply(Request::CreateProfile { name: "".into() }, "t").0,
+            Response::Error { .. }
+        ));
+        assert!(matches!(
+            e.apply(
+                Request::DuplicateProfile {
+                    from: "default".into(),
+                    to: "".into()
+                },
+                "t"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        assert!(matches!(
+            e.apply(
+                Request::RenameProfile {
+                    from: "default".into(),
+                    to: "".into()
+                },
+                "t"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        // Nothing landed under "" and the source profile is untouched.
+        assert!(e.config_snapshot().profiles.keys().all(|k| !k.is_empty()));
+        assert_eq!(e.active_profile(), "default");
+    }
+
     #[test]
     fn set_bind_validates_and_mutates() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         let ok = e.apply(
             Request::SetBind {
                 profile: "default".into(),
@@ -1701,7 +1768,7 @@ mod tests {
         // `key_name(code)` form that `resolve` looks up by — not the raw user
         // string — so the bind actually resolves at runtime. We assert the
         // profile map is keyed by the canonical name.
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         let key_str = "KEY_A".to_string();
         let canonical = key_name(KeyCode::KEY_A); // what resolve() looks up
         e.apply(
@@ -1727,7 +1794,7 @@ mod tests {
 
     #[test]
     fn set_lighting_active_emits_devicecmd_inactive_does_not() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         e.apply(
             Request::CreateProfile {
                 name: "other".into(),
@@ -1762,7 +1829,7 @@ mod tests {
 
     #[test]
     fn set_brightness_emits_devicecmd_and_stores() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         let (r, cmds) = e.apply(Request::SetBrightness { level: 42 }, "t");
         assert_eq!(r, Response::Ack);
         assert_eq!(cmds, vec![DeviceCmd::SetBrightness(42)]);
@@ -1776,7 +1843,7 @@ mod tests {
 
     #[test]
     fn macro_save_get_list_delete() {
-        let mut e = two_profile_engine();
+        let mut e = single_profile_engine();
         let m = Macro {
             name: "m".into(),
             steps: vec![MacroStep::Press {
@@ -1818,6 +1885,85 @@ mod tests {
         ));
     }
 
+    /// SaveMacro validates at the boundary like SetBind/SetActuation: a
+    /// typo'd step key or an empty name is a clear error — not a macro that
+    /// silently no-ops (or leaves a key stuck) when played.
+    #[test]
+    fn save_macro_rejects_bad_step_keys_and_empty_names() {
+        let mut e = single_profile_engine();
+        let (resp, _) = e.apply(
+            Request::SaveMacro {
+                r#macro: Macro {
+                    name: "burst".into(),
+                    steps: vec![MacroStep::Press {
+                        key: "KEY_TPYO".into(),
+                    }],
+                },
+            },
+            "t",
+        );
+        let Response::Error { message } = resp else {
+            panic!("a typo'd step key must reject the macro");
+        };
+        assert!(message.contains("KEY_TPYO"));
+        assert!(e.macro_steps("burst").is_none(), "nothing must be stored");
+        // An over-cap delay is rejected too: it would be valid JSON on the
+        // wire but unpersistable (TOML integers are i64), wedging every
+        // subsequent whole-config save if it ever entered the config.
+        assert!(matches!(
+            e.apply(
+                Request::SaveMacro {
+                    r#macro: Macro {
+                        name: "stall".into(),
+                        steps: vec![MacroStep::Delay {
+                            ms: tartarust_ipc::model::MAX_MACRO_DELAY_MS + 1,
+                        }],
+                    },
+                },
+                "t",
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        assert!(e.macro_steps("stall").is_none(), "nothing must be stored");
+        // Empty name.
+        assert!(matches!(
+            e.apply(
+                Request::SaveMacro {
+                    r#macro: Macro {
+                        name: String::new(),
+                        steps: vec![],
+                    },
+                },
+                "t",
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        // Valid macros (Delay steps carry no key) still save.
+        assert_eq!(
+            e.apply(
+                Request::SaveMacro {
+                    r#macro: Macro {
+                        name: "ok".into(),
+                        steps: vec![
+                            MacroStep::Delay { ms: 5 },
+                            MacroStep::Press {
+                                key: "KEY_A".into(),
+                            },
+                            MacroStep::Release {
+                                key: "KEY_A".into(),
+                            },
+                        ],
+                    },
+                },
+                "t",
+            )
+            .0,
+            Response::Ack
+        );
+    }
+
     // ---- auto-switch (M4) ----
 
     /// Engine with profiles "default" (no link) and "fps" (linked to "game").
@@ -1826,18 +1972,9 @@ mod tests {
         default.linked_app = None;
         let mut fps = Profile::new("fps");
         fps.linked_app = Some("game".to_string());
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".into(), default);
-        profiles.insert("fps".into(), fps);
-        Engine::new(Config {
-            default_profile: "default".into(),
-            auto_switch,
-            tray: true,
-            input_mode: InputMode::Digital,
-            analog: AnalogConfig::default(),
-            profiles,
-            macros: BTreeMap::new(),
-        })
+        let mut c = config_with("default", vec![default, fps]);
+        c.auto_switch = auto_switch;
+        Engine::new(c)
     }
 
     #[test]
@@ -1936,17 +2073,10 @@ mod tests {
                 second_action: Some("KEY_LEFTSHIFT".into()),
             },
         );
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".to_string(), Profile::new("default"));
-        let mut e = Engine::new(Config {
-            default_profile: "default".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Analog,
-            analog: analog.clone(),
-            profiles,
-            macros: BTreeMap::new(),
-        });
+        let mut c = config_with("default", vec![Profile::new("default")]);
+        c.input_mode = InputMode::Analog;
+        c.analog = analog.clone();
+        let mut e = Engine::new(c);
 
         // A mutating request that does NOT touch input_mode/analog.
         let (resp, _) = e.apply(
@@ -1987,17 +2117,10 @@ mod tests {
                 second_action: None,
             },
         );
-        let mut profiles = BTreeMap::new();
-        profiles.insert("default".to_string(), Profile::new("default"));
-        Engine::new(Config {
-            default_profile: "default".into(),
-            auto_switch: true,
-            tray: true,
-            input_mode: InputMode::Analog,
-            analog,
-            profiles,
-            macros: BTreeMap::new(),
-        })
+        let mut c = config_with("default", vec![Profile::new("default")]);
+        c.input_mode = InputMode::Analog;
+        c.analog = analog;
+        Engine::new(c)
     }
 
     #[test]
@@ -2109,6 +2232,45 @@ mod tests {
         assert_eq!(state.keys.len(), 1);
         assert_eq!(state.keys[0].index, 5);
         assert_eq!(state.keys[0].key, "KEY_Q");
+    }
+
+    /// A hand-edited `[analog.keys.N]` with N >= ANALOG_KEY_COUNT is invisible
+    /// to the actuator and rejected by SetActuation, so GetAnalogState must
+    /// not surface it either — the IPC contract documents `index` as
+    /// `0..ANALOG_KEY_COUNT`, and clients may index `pressures` by it.
+    #[test]
+    fn get_analog_state_skips_out_of_range_indices() {
+        let mut analog = AnalogConfig {
+            poll_interval_ms: 50,
+            keys: BTreeMap::new(),
+        };
+        for (index, key) in [("5", "KEY_Q"), ("99", "KEY_X")] {
+            analog.keys.insert(
+                index.to_string(),
+                AnalogKey {
+                    key: key.into(),
+                    actuation_point: 0x60,
+                    release_point: 0x50,
+                    second_actuation_point: None,
+                    second_action: None,
+                },
+            );
+        }
+        let mut c = config_with("default", vec![Profile::new("default")]);
+        c.input_mode = InputMode::Analog;
+        c.analog = analog;
+        let mut e = Engine::new(c);
+
+        let (resp, _) = e.apply(Request::GetAnalogState, "t");
+        let Response::AnalogState(state) = resp else {
+            panic!("expected AnalogState");
+        };
+        assert_eq!(
+            state.keys.len(),
+            1,
+            "index 99 is out of range and must be dropped"
+        );
+        assert_eq!(state.keys[0].index, 5);
     }
 
     #[test]
@@ -2693,6 +2855,41 @@ mod tests {
         assert_eq!(bundle.profile.name, "default");
     }
 
+    /// `Engine::new` stamps each profiles/macros MAP KEY onto the inline
+    /// `name` field. Hand-written configs may omit `name` entirely (serde
+    /// default: `""`) — without the stamp, auto-switch would resolve the
+    /// empty name (a silent no-op that still logged "auto-switched"),
+    /// ListProfiles would surface a blank entry, and import's linked_app
+    /// collision check would miscount the stale name.
+    #[test]
+    fn new_stamps_map_keys_onto_profile_and_macro_names() {
+        let mut config = cfg(vec![], vec![]);
+        {
+            let p = config.profiles.get_mut("default").unwrap();
+            p.name = String::new(); // as loaded from a name-less [profiles.default]
+            p.linked_app = Some("game".into());
+        }
+        config.macros.insert(
+            "burst".into(),
+            Macro {
+                name: String::new(),
+                steps: vec![],
+            },
+        );
+        let mut e = Engine::new(config);
+        // Auto-switch resolves the map key, not the empty inline name.
+        assert_eq!(e.profile_for_app("game"), Some("default".to_string()));
+        // ListProfiles surfaces the map key.
+        let (Response::Profiles(list), _) = e.apply(Request::ListProfiles, "t") else {
+            panic!("expected profile list");
+        };
+        assert_eq!(list.profiles[0].name, "default");
+        // The macro name is stamped too.
+        assert_eq!(e.macro_steps("burst").unwrap().name, "burst");
+        // Stamping happens BEFORE the saved snapshot is cloned: still clean.
+        assert!(!e.is_dirty());
+    }
+
     /// Bind keys get set_bind's boundary treatment: an unknown key name rejects
     /// the whole import (atomically), valid names import intact.
     #[test]
@@ -2752,5 +2949,43 @@ mod tests {
             panic!("expected the imported profile");
         };
         assert!(got.base.contains_key("KEY_A"));
+    }
+
+    /// Bundled macros get the same step validation as `SaveMacro`: a typo'd
+    /// step key rejects the whole import atomically.
+    #[test]
+    fn import_validates_macro_step_keys() {
+        let mut e = Engine::new(cfg(vec![], vec![]));
+        let (resp, _) = e.apply(
+            Request::ImportProfile {
+                profile: Profile::new("fresh"),
+                macros: vec![Macro {
+                    name: "bad".into(),
+                    steps: vec![MacroStep::Press {
+                        key: "KEY_TPYO".into(),
+                    }],
+                }],
+                rename: None,
+                overwrite: false,
+            },
+            "v",
+        );
+        let Response::Error { message } = resp else {
+            panic!("a typo'd macro step must reject the import");
+        };
+        assert!(message.contains("KEY_TPYO"));
+        // Atomic: neither the macro nor the profile landed.
+        assert!(e.macro_steps("bad").is_none());
+        assert!(matches!(
+            e.apply(
+                Request::GetProfile {
+                    name: "fresh".into()
+                },
+                "v"
+            )
+            .0,
+            Response::Error { .. }
+        ));
+        assert!(!e.is_dirty());
     }
 }
