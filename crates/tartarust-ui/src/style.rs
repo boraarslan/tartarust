@@ -1017,12 +1017,21 @@ a:focus-visible, [tabindex]:focus-visible {
   z-index: 1;
 }
 
-/* Page-level calibration actions (the "Reset all to defaults" button), a thin
+/* Calibration page wrapper: while the Edit Mode drawer is open, shift the whole
+   page (toolbar included) left of it — the fixed drawer must never cover the
+   "Exit Edit Mode" button, the mode's only exit. Matches the drawer's slide. */
+.cal-page { transition: margin-right .22s cubic-bezier(.2, .8, .3, 1); }
+.cal-page.panel-open { margin-right: 332px; }
+
+/* Page-level calibration actions ("Reset all" + the Edit Mode toggle), a thin
    right-aligned row between the banner area and the stage. */
 .cal-toolbar {
-  display: flex; justify-content: flex-end;
+  display: flex; justify-content: flex-end; align-items: center; gap: 10px;
   margin-bottom: 12px;
 }
+/* The Edit Mode toggle while ON: a rust ring, same accent as the selected caps,
+   so the mode reads as "armed" at a glance. */
+.cal-toolbar .edit-toggle.on { border-color: var(--rust); color: var(--rust); }
 
 /* Calibration multi-select: caps in the selection set get a rust ring (drag
    or Shift+click). Distinct from the single `.selected` ring. */
@@ -1032,21 +1041,25 @@ a:focus-visible, [tabindex]:focus-visible {
   background: linear-gradient(180deg, #322A20, #241E16);
 }
 
-/* Bulk actuation editor — a centred floating dialog (targets many caps, so it
-   isn't cap-anchored like .cal-modal) over its own dimming backdrop. */
-.multi-backdrop {
-  position: fixed; inset: 0; z-index: 80;
-  background: rgba(10,9,7,0.6);
-}
-.multi-modal {
-  position: fixed; z-index: 81;
-  top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 320px; max-width: calc(100vw - 48px);
+/* Edit Mode drawer — the bulk actuation editor, docked to the right edge and
+   slid in on mount. Deliberately NO backdrop: the caps must stay clickable so
+   the selection can be reshaped while the panel is open. Below the 54px
+   masthead; scrolls internally if the viewport is short. */
+.cal-panel {
+  position: fixed; z-index: 80;
+  top: 70px; right: 16px; bottom: 16px;
+  width: 300px; max-width: calc(100vw - 48px);
+  overflow-y: auto;
   background: var(--panel-1);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: 0 20px 50px rgba(0,0,0,0.65);
   padding: 18px;
+  animation: cal-panel-in .22s cubic-bezier(.2, .8, .3, 1);
+}
+@keyframes cal-panel-in {
+  from { transform: translateX(28px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
 }
 
 /* ----- Profiles page --------------------------------------------------------- */

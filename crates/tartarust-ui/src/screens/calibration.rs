@@ -13,6 +13,14 @@
 //!   * sliders for actuation / release (with hysteresis) plus an optional
 //!     dual-step (deeper second actuation + a second evdev action).
 //!
+//! Bulk edits go through **Edit Mode** (the toolbar toggle, top right): entering
+//! selects every cap and slides in the right-hand [`EditPanel`] — actuation and
+//! release sliders that apply to the whole selection, plus a live bar showing
+//! the deepest press among the selected caps. While Edit Mode is on, clicking a
+//! cap toggles it in/out of the selection and a drag sweeps caps in. Outside
+//! Edit Mode, a drag across >1 caps or a Shift+click enters it with that
+//! selection (a plain click still opens the single-key editor).
+//!
 //! Edits are optimistic-local and pushed via `SetActuation`; the schema
 //! invariants (`release < actuation`, second step deeper, `second_action` set
 //! iff `second_actuation_point` is set) are enforced here before sending. The
@@ -33,12 +41,22 @@ use tartarust_ipc::{AnalogKeyConfig, AnalogState, DEFAULT_ACTUATION_POINT, DEFAU
 use crate::components::{
     CapPhase, CapPointer, KeyPicker, Keypad, KeypadMode, PageHead, Slider, Toggle,
 };
-use crate::model::{KeyId, pretty_key};
+use crate::model::{GRID_EVDEV, KeyId, pretty_key};
 use crate::use_store;
 
 /// Integer percentage readout for a raw 0..255 pressure value.
 fn pct100(v: u8) -> u8 {
     (v as u16 * 100 / 255) as u8
+}
+
+/// Every analog-calibratable cap: the 19 grid keys plus the spacebar. The thumb
+/// button, thumbpad, and wheel are digital-only (no pressure byte), so they are
+/// not selectable here — the keypad renders in `analog_only` mode anyway.
+fn all_analog_ids() -> BTreeSet<KeyId> {
+    (0..GRID_EVDEV.len() as u8)
+        .map(KeyId::Grid)
+        .chain([KeyId::Space])
+        .collect()
 }
 
 /// How often to re-poll the live analog state while on this screen.
@@ -53,11 +71,23 @@ pub fn Calibration() -> Element {
 
     let mut store = use_store();
 
+    // Edit Mode state, lifted here so the toolbar toggle can drive it. `multi`
+    // is the selected cap set; the right-hand EditPanel is open iff `edit_mode`.
+    let mut edit_mode = use_signal(|| false);
+    let mut multi = use_signal(BTreeSet::<KeyId>::new);
+
     // Entering Calibration starts with NOTHING selected — don't inherit a key
     // selection (and auto-open its actuation modal) carried over from Customize
     // or a prior visit. Runs once on mount (no tracked signal reads).
     use_effect(move || {
         store.write().selected = None;
+        // Dev-only: let the headless screenshot harness open Edit Mode directly
+        // (TARTARUST_CAL_EDIT=1) — the panel is otherwise unreachable without a
+        // click. No effect in normal use (the var is unset).
+        if std::env::var("TARTARUST_CAL_EDIT").as_deref() == Ok("1") {
+            multi.set(all_analog_ids());
+            edit_mode.set(true);
+        }
     });
 
     // Poll `GetAnalogState` on an interval, but ONLY while this component is
@@ -83,7 +113,11 @@ pub fn Calibration() -> Element {
     let state = analog();
 
     rsx! {
-        PageHead { sub: "Click a key to tune its analog actuation. Caps fill with live pressure as you press." }
+        // While the Edit Mode drawer is open, `.panel-open` shifts the whole
+        // page left of it — otherwise the fixed drawer would cover the toolbar
+        // (including the "Exit Edit Mode" button, the mode's only exit).
+        div { class: if edit_mode() { "cal-page panel-open" } else { "cal-page" },
+        PageHead { sub: "Click a key to tune its analog actuation — drag or use Edit Mode to tune many at once." }
 
         // Contextual notice for non-live states. The keypad below ALWAYS renders
         // (so the board reads as "keys" in every state, consistent with the other
@@ -94,11 +128,13 @@ pub fn Calibration() -> Element {
             Some(_) => rsx! {},
         }
 
-        // Page-level reset: return EVERY analog key to the default thresholds
-        // (dropping any dual-step). Only offered while something is actually
-        // custom; like any other edit it applies live and persists on Save.
-        if state.as_ref().is_some_and(|a| a.keys.iter().any(|k| k.is_custom())) {
-            div { class: "cal-toolbar",
+        // Page toolbar, top right: the conditional "Reset all" plus the Edit
+        // Mode toggle (always present — it is the bulk-edit entry point).
+        div { class: "cal-toolbar",
+            // Page-level reset: return EVERY analog key to the default thresholds
+            // (dropping any dual-step). Only offered while something is actually
+            // custom; like any other edit it applies live and persists on Save.
+            if state.as_ref().is_some_and(|a| a.keys.iter().any(|k| k.is_custom())) {
                 button {
                     class: "btn",
                     onclick: move |_| {
@@ -124,9 +160,26 @@ pub fn Calibration() -> Element {
                     "Reset all to defaults"
                 }
             }
+            // Entering selects EVERY cap and opens the panel; exiting clears the
+            // selection. While on, cap clicks toggle membership (see `pointer`).
+            button {
+                class: if edit_mode() { "btn edit-toggle on" } else { "btn edit-toggle" },
+                onclick: move |_| {
+                    if *edit_mode.peek() {
+                        edit_mode.set(false);
+                        multi.write().clear();
+                    } else {
+                        store.write().selected = None;
+                        multi.set(all_analog_ids());
+                        edit_mode.set(true);
+                    }
+                },
+                if edit_mode() { "Exit Edit Mode" } else { "Edit Mode" }
+            }
         }
 
-        Stage { state }
+        Stage { state, edit_mode, multi }
+        }
     }
 }
 
@@ -137,15 +190,16 @@ pub fn Calibration() -> Element {
 /// cap is configured, so in digital mode the editor still opens and its edits
 /// persist for the next analog run. Replaces the old scrollable card list.
 #[component]
-fn Stage(state: Option<AnalogState>) -> Element {
+fn Stage(
+    state: Option<AnalogState>,
+    edit_mode: Signal<bool>,
+    multi: Signal<BTreeSet<KeyId>>,
+) -> Element {
     let mut store = use_store();
 
-    // Multi-select state (screen-local; separate from the global single
-    // `store.selected`). `multi` is the selected set; `dragging` gates the
-    // drag-extend; `multi_open` shows the bulk editor.
-    let mut multi = use_signal(BTreeSet::<KeyId>::new);
+    // `edit_mode`/`multi` live in Calibration (the toolbar toggle drives them);
+    // `dragging` is stage-local — it only gates the drag-extend.
     let mut dragging = use_signal(|| false);
-    let mut multi_open = use_signal(|| false);
 
     // Move the two Vecs OUT of the by-value prop instead of cloning them —
     // nothing below reads `state` itself, and this runs at the poll rate.
@@ -174,11 +228,17 @@ fn Stage(state: Option<AnalogState>) -> Element {
     // centre for right-side caps (right grid columns + the thumb cluster) so it
     // never runs off-screen. Unconfigured caps, the wheel, and the whole offline
     // path resolve to `None` — no editor opens.
-    let selected_cfg: Option<(AnalogKeyConfig, bool)> = store.read().selected.and_then(|sel| {
-        let name = sel.evdev()?;
-        let cfg = keys.iter().find(|c| c.key == name).cloned()?;
-        Some((cfg, opens_left(sel)))
-    });
+    // In Edit Mode the single-key editor never opens — the selection belongs to
+    // the multi set and the EditPanel.
+    let selected_cfg: Option<(AnalogKeyConfig, bool)> = if edit_mode() {
+        None
+    } else {
+        store.read().selected.and_then(|sel| {
+            let name = sel.evdev()?;
+            let cfg = keys.iter().find(|c| c.key == name).cloned()?;
+            Some((cfg, opens_left(sel)))
+        })
+    };
 
     // Resolve the multi-selection to the analog configs we can bulk-edit (caps
     // with no analog config — e.g. an unmapped key — are silently skipped).
@@ -189,14 +249,14 @@ fn Stage(state: Option<AnalogState>) -> Element {
             keys.iter().find(|c| c.key == name).cloned()
         })
         .collect();
-    let show_multi = multi_open() && !multi_cfgs.is_empty();
 
-    // Evdev names the daemon has an analog config for; the multi-open paths (drag
-    // release and Shift release) only open the bulk editor when the selection
-    // resolves to at least one of these, else the highlight would wedge with
-    // nothing to show.
-    let configured: BTreeSet<String> = keys.iter().map(|c| c.key.clone()).collect();
-    let configured_shift = configured.clone();
+    // The deepest live press among the SELECTED caps — the EditPanel's pressure
+    // indicator. Follows the poll (this component re-renders on each change).
+    let live_max: u8 = multi_cfgs
+        .iter()
+        .filter_map(|c| frame.get(c.index as usize).copied())
+        .max()
+        .unwrap_or(0);
 
     // Caps whose actuation deviates from the defaults — the keypad marks them
     // with a dot so customized keys read at a glance.
@@ -206,34 +266,32 @@ fn Stage(state: Option<AnalogState>) -> Element {
         .map(|c| c.key.clone())
         .collect();
 
-    // Cap pointer handler: a plain click single-selects (the cap-anchored editor);
-    // a drag across >1 cap, or Shift+clicks, build the multi set; the bulk editor
-    // opens on drag-end (>1 caps) or on Shift release (the stage's onkeyup below).
+    // Cap pointer handler. In Edit Mode: Down toggles the cap in/out of the
+    // selection and starts a drag; Enter (button held) sweeps caps in. Outside:
+    // a plain click single-selects (the cap-anchored editor); a drag across >1
+    // caps — or a Shift+click — enters Edit Mode with that selection. Shift no
+    // longer waits for release (the old bulk modal did; the EditPanel handles a
+    // live selection), which is what let the stage drop its whole DOM-focus /
+    // onkeyup Shift-release apparatus.
     let pointer = EventHandler::new(move |p: CapPointer| match p.phase {
         CapPhase::Down => {
-            // Re-claim the stage's DOM focus on every interaction start: it is
-            // granted once in `onmounted`, but wanders into the CalModal's
-            // inputs (sliders, the KeyPicker's autofocused search) or the
-            // toolbar's reset button during normal use, and clicking the
-            // non-focusable caps does NOT bring it back on WebKitGTK. Without
-            // this, the Shift-release detector (the stage's `onkeyup`) goes
-            // permanently deaf after the first modal interaction — Shift+click
-            // would highlight caps but never open the bulk editor.
-            spawn(async move {
-                let _ = document::eval(
-                    "document.getElementById('cal-stage')?.focus({preventScroll:true});",
-                )
-                .await;
-            });
-            if p.shift {
-                // Shift+click: accumulate silently; the editor waits for release.
+            if *edit_mode.peek() {
+                // Toggle membership; a drag from here sweeps more caps in.
+                let mut m = multi.write();
+                if !m.remove(&p.key) {
+                    m.insert(p.key);
+                }
+                drop(m);
+                dragging.set(true);
+            } else if p.shift {
+                // Shift+click enters Edit Mode immediately with this cap.
                 multi.write().insert(p.key);
-                multi_open.set(false);
+                edit_mode.set(true);
+                dragging.set(true);
                 store.write().selected = None;
             } else {
                 // Begin a drag (also covers a plain click = a drag of one cap).
                 dragging.set(true);
-                multi_open.set(false);
                 multi.set(BTreeSet::from([p.key]));
             }
         }
@@ -248,20 +306,16 @@ fn Stage(state: Option<AnalogState>) -> Element {
         CapPhase::Up => {
             if *dragging.peek() {
                 dragging.set(false);
+                // In Edit Mode there is nothing to resolve on release: the panel
+                // is already open and Down/Enter built the selection live.
+                if *edit_mode.peek() {
+                    return;
+                }
                 let set = multi.peek().clone();
                 if set.len() > 1 {
-                    // A real multi-key drag → bulk editor, but only if the drag
-                    // covers ≥1 analog-configured cap; otherwise clear the set so
-                    // the highlight can't wedge with no editor to open.
-                    if set
-                        .iter()
-                        .any(|k| k.evdev().is_some_and(|n| configured.contains(n)))
-                    {
-                        multi_open.set(true);
-                        store.write().selected = None;
-                    } else {
-                        multi.write().clear();
-                    }
+                    // A real multi-key drag → Edit Mode with that selection.
+                    edit_mode.set(true);
+                    store.write().selected = None;
                 } else {
                     // A single click: fall back to the normal single-key editor,
                     // and re-clicking the already-selected cap toggles it closed.
@@ -289,53 +343,20 @@ fn Stage(state: Option<AnalogState>) -> Element {
         // INSIDE the selected cap (each cap is position:relative), so it floats
         // beside whichever cap was clicked — consistent from the first render,
         // with no row/column math that the 5/5/5/4 layout would break.
-        //
-        // `tabindex` lets the stage receive key events: releasing Shift after a
-        // run of Shift+clicks opens the bulk editor (onkeyup).
         div {
             class: "stage",
-            tabindex: "0",
-            // Take keyboard focus on mount so the Shift-release detector (onkeyup
-            // below) actually fires: clicking the non-focusable caps doesn't grant
-            // focus to this tabindex container on WebKitGTK, so without this the
-            // Shift+click multi-select path would never open the bulk editor.
-            // Via focus({preventScroll}) — set_focus() scrolls the tall stage into
-            // view on mount, which hides the page head + reset toolbar above it.
-            id: "cal-stage",
-            onmounted: move |_| {
-                spawn(async move {
-                    let _ = document::eval(
-                        "document.getElementById('cal-stage')?.focus({preventScroll:true});",
-                    )
-                    .await;
-                });
-            },
             style: "position:relative; z-index:51; outline:none;",
             // Click the bare stage to clear the single selection and end any drag.
             // A cross-cap drag emits a trailing synthetic click on the caps' common
             // ancestor (a keypad div that doesn't stop propagation) which bubbles
-            // here AFTER CapPhase::Up opened the bulk editor — so we must NOT clear
-            // the multi-selection while the editor is open (multi_open), or the drag
-            // would be killed. When the editor IS open, its own `.multi-backdrop`
-            // handles dismissal; here we only drop a still-accumulating selection.
+            // here AFTER CapPhase::Up entered Edit Mode — so in Edit Mode the
+            // multi-selection must survive (exiting is the toolbar button's job);
+            // here we only drop a still-accumulating selection.
             onclick: move |_| {
                 store.write().selected = None;
                 dragging.set(false);
-                if !*multi_open.peek() {
+                if !*edit_mode.peek() {
                     multi.write().clear();
-                }
-            },
-            onkeyup: move |e: KeyboardEvent| {
-                if e.key() == Key::Shift && !*dragging.peek() {
-                    let set = multi.peek().clone();
-                    if set.iter().any(|k| {
-                        k.evdev().is_some_and(|n| configured_shift.contains(n))
-                    }) {
-                        multi_open.set(true);
-                        store.write().selected = None;
-                    } else {
-                        multi.write().clear();
-                    }
                 }
             },
             Keypad {
@@ -360,117 +381,166 @@ fn Stage(state: Option<AnalogState>) -> Element {
                 }
             }
 
-            // Bulk actuation editor for a multi-selection (drag or Shift+click).
-            // Only actuation/release — never second functions — and it preserves
-            // each key's own dual-step. Toggling `show_multi` remounts it, so it
-            // always re-seeds for the current selection.
-            if show_multi {
-                MultiCalModal {
-                    cfgs: multi_cfgs,
-                    on_close: move |_| {
-                        multi.write().clear();
-                        multi_open.set(false);
-                    },
-                }
+        }
+
+        // The Edit Mode drawer. A sibling of the stage (position:fixed, so it
+        // escapes the stage's stacking context cleanly) with NO backdrop — the
+        // caps must stay clickable so the selection can be reshaped live.
+        if edit_mode() {
+            EditPanel {
+                cfgs: multi_cfgs,
+                // The RAW selection size — offline, caps select fine but resolve
+                // to no configs, and the head must not claim "0 selected" while
+                // 20 caps visibly carry the ring.
+                selected: multi().len(),
+                live_max,
+                on_select_all: move |_| multi.set(all_analog_ids()),
+                on_clear: move |_| multi.write().clear(),
             }
         }
     }
 }
 
-/// Bulk actuation editor for a multi-selection: actuation + release points only
-/// (no dual-step / second action, per the multi-edit spec), applied to EVERY
-/// selected analog key at once. Each key keeps its own existing second function —
-/// we forward `second_*` untouched, so a bulk threshold change never wipes a
-/// per-key dual-step. A floating, centred dialog (not cap-anchored, since it
-/// targets many caps), with its own dimming backdrop.
+/// The Edit Mode drawer: actuation + release points only (no dual-step / second
+/// action, per the multi-edit spec), applied to EVERY selected analog key at
+/// once. Each key keeps its own existing second function — we forward `second_*`
+/// untouched, so a bulk threshold change never wipes a per-key dual-step.
+///
+/// Docked to the right edge and slid in via `.cal-panel`, with NO backdrop: the
+/// caps stay clickable, so the selection can be reshaped while the panel is
+/// open. That is also why `cfgs` is used as a plain prop, not a mount-time
+/// snapshot — the apply closures are rebuilt each render and always target the
+/// CURRENT selection. The sliders seed from the first selected key when the
+/// panel mounts (entering Edit Mode); reshaping the selection keeps the current
+/// slider values (they are what you're about to apply, not a per-key readback).
+/// The live bar shows the deepest press among the selected caps right now.
 #[component]
-fn MultiCalModal(cfgs: Vec<AnalogKeyConfig>, on_close: EventHandler<()>) -> Element {
+fn EditPanel(
+    cfgs: Vec<AnalogKeyConfig>,
+    selected: usize,
+    live_max: u8,
+    on_select_all: EventHandler<()>,
+    on_clear: EventHandler<()>,
+) -> Element {
     let store = use_store();
     let count = cfgs.len();
-    // Seed the sliders from the first selected key; editing then writes all.
     let seed_act = cfgs
         .first()
         .map_or(DEFAULT_ACTUATION_POINT, |c| c.actuation_point);
     let seed_rel = cfgs
         .first()
         .map_or(DEFAULT_RELEASE_POINT, |c| c.release_point);
-    let cfgs = use_signal(|| cfgs);
     let mut actuation = use_signal(|| seed_act);
     let mut release = use_signal(|| seed_rel);
 
-    // Push the current actuation/release to every selected analog key, preserving
-    // each key's own dual-step (`second_*` forwarded verbatim). All captures are
-    // Copy (signals), so this closure is reusable across both sliders.
-    let push = move || {
-        let act_raw = actuation();
-        for c in cfgs.read().iter() {
-            // A key WITH a dual-step caps its primary at 254: the second point
-            // must be STRICTLY deeper, and `saturating_add(1)` at 255 would
-            // otherwise send second == actuation, violating the SetActuation
-            // contract. Release re-derives from the (possibly capped) value so
-            // hysteresis holds too.
-            let act = if c.second_actuation_point.is_some() {
-                act_raw.min(254)
-            } else {
-                act_raw
-            };
-            let rel = release().min(act.saturating_sub(1)); // hysteresis: release < actuation
-            let sap = c
-                .second_actuation_point
-                .map(|p| p.max(act.saturating_add(1))); // deeper than actuation
-            crate::ipc::set_actuation(store, c.index, act, rel, sap, c.second_action.clone());
+    // Push the given actuation/release to every selected analog key, preserving
+    // each key's own dual-step (`second_*` forwarded verbatim). Cloned per
+    // slider — the capture is the current `cfgs`, not a signal.
+    let apply = {
+        let cfgs = cfgs.clone();
+        move |act_raw: u8, rel_raw: u8| {
+            for c in &cfgs {
+                // A key WITH a dual-step caps its primary at 254: the second
+                // point must be STRICTLY deeper, and `saturating_add(1)` at 255
+                // would otherwise send second == actuation, violating the
+                // SetActuation contract. Release re-derives from the (possibly
+                // capped) value so hysteresis holds too.
+                let act = if c.second_actuation_point.is_some() {
+                    act_raw.min(254)
+                } else {
+                    act_raw
+                };
+                let rel = rel_raw.min(act.saturating_sub(1)); // hysteresis: release < actuation
+                let sap = c
+                    .second_actuation_point
+                    .map(|p| p.max(act.saturating_add(1))); // deeper than actuation
+                crate::ipc::set_actuation(store, c.index, act, rel, sap, c.second_action.clone());
+            }
         }
     };
+    let apply_rel = apply.clone();
 
     let act_v = actuation();
     let rel_v = release();
     let names: String = cfgs
-        .read()
         .iter()
         .map(|c| pretty_key(&c.key))
         .collect::<Vec<_>>()
         .join(", ");
 
+    // Marker/fill positions as 0..100% of the 0–255 scale (same as CalModal).
+    let pct = |v: u8| (v as f32 / 255.0 * 100.0).clamp(0.0, 100.0);
+
     rsx! {
-        div { class: "multi-backdrop", onclick: move |_| on_close.call(()) }
         div {
-            class: "multi-modal",
+            class: "cal-panel",
             onclick: move |e| e.stop_propagation(),
             div { class: "cal-modal-head",
-                span { "{count} keys · bulk actuation" }
-                span { class: "link-x", onclick: move |_| on_close.call(()), "×" }
+                span { "Edit Mode · {selected} selected" }
             }
-            div { class: "field-value", style: "color:var(--mute);margin-bottom:12px;", "{names}" }
 
-            Slider {
-                label: "Actuation point".to_string(),
-                value: act_v as f64,
-                min: 1.0, max: 255.0, step: 1.0,
-                readout: format!("{act_v} ({}%)", pct100(act_v)),
-                on_input: move |v: f64| {
-                    let nv = v as u8;
-                    actuation.set(nv);
-                    if release() >= nv {
-                        release.set(nv.saturating_sub(1));
+            // Selection controls, top of the panel per the spec.
+            div { class: "btn-row", style: "margin-bottom:14px;",
+                button { class: "btn", onclick: move |_| on_clear.call(()), "Clear all" }
+                button { class: "btn", onclick: move |_| on_select_all.call(()), "Select all" }
+            }
+
+            if selected == 0 {
+                div { class: "field-value", style: "color:var(--mute);",
+                    "No keys selected — click caps on the board to add them."
+                }
+            } else if count == 0 {
+                // Caps are selected but none resolves to an analog config — the
+                // offline case. Honest, instead of sliders that would edit nothing.
+                div { class: "field-value", style: "color:var(--mute);",
+                    "The selected caps have no analog config to edit — daemon offline?"
+                }
+            } else {
+                // The deepest press among the selected caps at this moment, with
+                // the pending actuation/release marks for reference.
+                div { class: "field",
+                    label { class: "field-label", "Live pressure (max of selection)" }
+                    div { class: "press-bar",
+                        div { class: "press-fill", style: "width:{pct(live_max)}%;" }
+                        div { class: "press-mark release", style: "left:{pct(rel_v)}%;", title: "release" }
+                        div { class: "press-mark actuate", style: "left:{pct(act_v)}%;", title: "actuation" }
                     }
-                    push();
-                },
-            }
+                    div { class: "press-readout", "{live_max} / 255 · {pct100(live_max)}%" }
+                }
 
-            Slider {
-                label: "Release point".to_string(),
-                value: rel_v as f64,
-                min: 0.0, max: 254.0, step: 1.0,
-                readout: format!("{rel_v} ({}%)", pct100(rel_v)),
-                on_input: move |v: f64| {
-                    let nv = (v as u8).min(actuation().saturating_sub(1));
-                    release.set(nv);
-                    push();
-                },
-            }
+                div { class: "divider" }
 
-            div { class: "field-value", style: "color:var(--mute);margin-top:12px;",
-                "Sets actuation & release for all selected keys at once. Each key keeps its own second function."
+                Slider {
+                    label: "Actuation point".to_string(),
+                    value: act_v as f64,
+                    min: 1.0, max: 255.0, step: 1.0,
+                    readout: format!("{act_v} ({}%)", pct100(act_v)),
+                    on_input: move |v: f64| {
+                        let nv = v as u8;
+                        actuation.set(nv);
+                        if release() >= nv {
+                            release.set(nv.saturating_sub(1));
+                        }
+                        apply(actuation(), release());
+                    },
+                }
+
+                Slider {
+                    label: "Release point".to_string(),
+                    value: rel_v as f64,
+                    min: 0.0, max: 254.0, step: 1.0,
+                    readout: format!("{rel_v} ({}%)", pct100(rel_v)),
+                    on_input: move |v: f64| {
+                        let nv = (v as u8).min(actuation().saturating_sub(1));
+                        release.set(nv);
+                        apply_rel(actuation(), release());
+                    },
+                }
+
+                div { class: "field-value", style: "color:var(--mute);margin-top:12px;",
+                    "Applies to every selected key. Each key keeps its own second function."
+                }
+                div { class: "field-value", style: "color:var(--mute);margin-top:8px;", "{names}" }
             }
         }
     }
