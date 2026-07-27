@@ -1,7 +1,6 @@
-# tartarust — ANALOG test config (generated 2026-06-22 from the user's
-# analog_map + discover-keys runs on this unit). Runs the keypad in ANALOG mode:
-# the daemon enters driver mode, reads per-key pressure, and fires each key at
-# its actuation point — so the 20 grid keys become analog.
+# tartarust — ANALOG demo config. Runs the keypad in ANALOG mode: the daemon
+# enters driver mode, reads per-key pressure, and fires each key at its
+# actuation point — so the 20 grid keys become analog.
 #
 #   cp docs/examples/config-analog.toml ~/.config/tartarust/config.toml
 #   cargo run --release --bin tartarust-daemon -- run  # Ctrl-C restores normal mode
@@ -37,59 +36,20 @@ steps = [
 ]
 
 # ===========================================================================
-# ANALOG MAP — byte index -> physical key, for THIS unit (from your runs).
-# Per-key actuation defaults to 0x60 (fire) / 0x50 (release) unless set below.
+# ANALOG MAP — built into the daemon. The byte index -> grid key layout is a
+# device-family constant (hardware-confirmed, identical across units), so
+# nothing needs mapping by hand. An [analog.keys.N] entry OVERRIDES one byte
+# index — use it to tune thresholds or add a dual-step action; unlisted
+# indices keep the built-in key at the default 0x60 (fire) / 0x50 (release)
+# points. Bytes 20-22 are unused, and the circular thumb button, 8-way
+# thumbpad, and wheel are digital-only (no pressure byte, not analog-mappable).
 # ===========================================================================
 [analog]
 poll_interval_ms = 50
 
-[analog.keys.0]
-key = "KEY_1"
-[analog.keys.1]
-key = "KEY_2"
-[analog.keys.2]
-key = "KEY_3"
-[analog.keys.3]
-key = "KEY_4"
-[analog.keys.4]
-key = "KEY_5"
-[analog.keys.5]
-key = "KEY_TAB"
-[analog.keys.6]
-key = "KEY_Q"
-[analog.keys.7]
-key = "KEY_W"
-[analog.keys.8]
-key = "KEY_E"
-[analog.keys.9]
-key = "KEY_R"
-[analog.keys.10]
-key = "KEY_CAPSLOCK"
-[analog.keys.11]
-key = "KEY_A"
-
 # Dual-step demo: light press emits KEY_S ("s"); a hard press (past 0xC0) also
-# emits KEY_LEFTSHIFT, so a deep press types "S".
+# emits KEY_LEFTSHIFT, so a deep press types "S". Byte 12 is the S-position cap.
 [analog.keys.12]
 key = "KEY_S"
 second_actuation_point = 0xC0
 second_action = "KEY_LEFTSHIFT"
-
-[analog.keys.13]
-key = "KEY_D"
-[analog.keys.14]
-key = "KEY_F"
-[analog.keys.15]
-key = "KEY_LEFTSHIFT"
-[analog.keys.16]
-key = "KEY_Z"
-[analog.keys.17]
-key = "KEY_X"
-[analog.keys.18]
-key = "KEY_C"
-# Byte 19 is the SPACEBAR (hardware-confirmed). Bytes 20-22 are unused, and the
-# circular thumb button, 8-way thumbpad, and wheel are digital-only (plain HID
-# keyboard inputs on interface 0) — they have no pressure byte and are NOT
-# analog-mappable.
-[analog.keys.19]
-key = "KEY_SPACE"

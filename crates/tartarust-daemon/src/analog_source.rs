@@ -747,6 +747,24 @@ mod tests {
         AnalogFrame { pressures }
     }
 
+    /// Every entry of the built-in analog map must resolve to a live actuator:
+    /// index in range, evdev name known. Guards the shipped map against typos —
+    /// `resolve_actuator` only warns and skips a bad entry, which here would
+    /// silently kill a grid key (DRIVER mode silences the grid digitally).
+    #[test]
+    fn builtin_map_resolves_every_actuator() {
+        let keys = crate::state::default_analog_keys();
+        assert_eq!(keys.len(), 20);
+        for (index_str, key) in &keys {
+            let index: usize = index_str.parse().expect("built-in index is numeric");
+            assert!(
+                resolve_actuator(index, key).is_some(),
+                "built-in map entry {index} ({}) must resolve",
+                key.key
+            );
+        }
+    }
+
     /// Single-key analog config: byte `index` -> `key`, default thresholds.
     fn one_key(index: u8, key: &str) -> AnalogConfig {
         let mut keys = BTreeMap::new();

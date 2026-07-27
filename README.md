@@ -24,8 +24,9 @@ socket.
   auto-switching (the Pro has no onboard profile memory), plus portable
   export/import (CLI or UI) for moving profiles between machines.
 - **Macros** — recorded key/button/delay sequences.
-- **Analog actuation** — adjustable actuation points / dual-step *(gated: the
-  config protocol is undocumented; see [`docs/research/03-analog-actuation.md`](docs/research/03-analog-actuation.md))*.
+- **Analog actuation** — per-key actuation points / dual-step, working out of
+  the box: the byte→key map is a device-family constant and ships built into
+  the daemon (see [`docs/research/03-analog-actuation.md`](docs/research/03-analog-actuation.md)).
 
 ## Architecture
 
@@ -153,8 +154,9 @@ effects accepted by the device), the daemon as device-owner + IPC server, and th
 full UI wired to the daemon (with a graceful "daemon offline" path).
 
 In progress: per-application auto-switch (M4), end-to-end validation of the remap
-pipeline, and hardening. Analog actuation config is gated on protocol
-reverse-engineering. Track milestones in [`docs/PLAN.md`](docs/PLAN.md).
+pipeline, and hardening. Analog actuation ships with the built-in byte→key map
+(hardware-confirmed, identical across units). Track milestones in
+[`docs/PLAN.md`](docs/PLAN.md).
 
 ## License
 

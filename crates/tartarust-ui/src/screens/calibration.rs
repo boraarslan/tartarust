@@ -91,7 +91,6 @@ pub fn Calibration() -> Element {
         match &state {
             None => rsx! { OfflineState {} },
             Some(a) if !a.analog_active => rsx! { DigitalModeState {} },
-            Some(a) if a.keys.is_empty() => rsx! { NoKeysState {} },
             Some(_) => rsx! {},
         }
 
@@ -133,9 +132,10 @@ pub fn Calibration() -> Element {
 
 /// The keypad stage: the rendered Tartarus in `Pressure` mode (each grid cap
 /// fills by its current pressure) plus a floating actuation editor next to the
-/// selected key. Always rendered — offline/digital/no-keys just means an empty
-/// pressure map (caps with no fill) and no openable editor. Replaces the old
-/// scrollable card list.
+/// selected key. Always rendered — offline/digital just means an empty pressure
+/// map (caps with no fill); the daemon's built-in analog map means every grid
+/// cap is configured, so in digital mode the editor still opens and its edits
+/// persist for the next analog run. Replaces the old scrollable card list.
 #[component]
 fn Stage(state: Option<AnalogState>) -> Element {
     let mut store = use_store();
@@ -773,7 +773,8 @@ fn OfflineState() -> Element {
     }
 }
 
-/// Daemon up but running in DIGITAL mode: nothing to calibrate. Point at the fix.
+/// Daemon up but running in DIGITAL mode: no live pressure to show (edits still
+/// apply and persist for the next analog run). Point at the fix.
 #[component]
 fn DigitalModeState() -> Element {
     rsx! {
@@ -783,18 +784,6 @@ fn DigitalModeState() -> Element {
             " — set "
             span { style: "font-family:var(--mono);", "input_mode = \"analog\"" }
             " in the daemon config to calibrate per-key pressure."
-        }
-    }
-}
-
-/// Analog mode, but no keys are mapped to actuation yet.
-#[component]
-fn NoKeysState() -> Element {
-    rsx! {
-        div { class: "banner",
-            span { class: "b-ico", "⌖" }
-            b { "No analog keys configured" }
-            " — map a byte index to a key in the daemon config, then click a cap to tune it."
         }
     }
 }

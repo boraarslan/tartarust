@@ -43,8 +43,10 @@ pub struct Config {
     /// HID keyboard on the boot interface. Analog mode therefore ALSO grabs
     /// every keyboard node and reads the boot one for the thumb keys, dropping
     /// the analog-claimed codes from that reader so nothing double-feeds (see
-    /// `crate::input::plan_grabs_analog` + `crate::analog_source`). Opt-in
-    /// until the byte->key map is confirmed on hardware.
+    /// `crate::input::plan_grabs_analog` + `crate::analog_source`). The
+    /// byte->key map is a device-family constant (hardware-confirmed, identical
+    /// across units) and ships built in — see [`default_analog_keys`] — so
+    /// analog mode works without a hand-written `[analog.keys]` table.
     #[serde(default)]
     pub input_mode: InputMode,
     /// Analog actuation settings (only consulted when `input_mode = Analog`).
@@ -85,12 +87,49 @@ pub const DEFAULT_ACTUATION_POINT: u8 = tartarust_ipc::DEFAULT_ACTUATION_POINT;
 /// fall to register a release. Prevents chatter around the threshold.
 pub const DEFAULT_HYSTERESIS: u8 = 0x10;
 
+/// The Tartarus Pro's analog frame layout: byte index -> grid key. This is a
+/// device-family constant, not a per-unit calibration — hardware-confirmed and
+/// identical across units. Bytes 20..22 carry no key, and the thumb button,
+/// thumbpad, and wheel are digital-only (no pressure byte), so 20 entries is
+/// the complete analog surface.
+#[rustfmt::skip]
+const DEFAULT_ANALOG_MAP: [&str; 20] = [
+    "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5",            // row 1: caps 01-05
+    "KEY_TAB", "KEY_Q", "KEY_W", "KEY_E", "KEY_R",          // row 2: caps 06-10
+    "KEY_CAPSLOCK", "KEY_A", "KEY_S", "KEY_D", "KEY_F",     // row 3: caps 11-15
+    "KEY_LEFTSHIFT", "KEY_Z", "KEY_X", "KEY_C",             // row 4: caps 16-19
+    "KEY_SPACE",                                            // byte 19: spacebar
+];
+
+/// Build the built-in analog key map: every mappable byte index bound to its
+/// hardware key at the default thresholds. This is what a config without an
+/// `[analog.keys]` table gets, and what [`AnalogConfig::fill_default_keys`]
+/// merges under a partial one.
+pub fn default_analog_keys() -> BTreeMap<String, AnalogKey> {
+    DEFAULT_ANALOG_MAP
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let entry = AnalogKey {
+                key: (*key).to_string(),
+                actuation_point: DEFAULT_ACTUATION_POINT,
+                release_point: DEFAULT_ACTUATION_POINT - DEFAULT_HYSTERESIS,
+                second_actuation_point: None,
+                second_action: None,
+            };
+            (index.to_string(), entry)
+        })
+        .collect()
+}
+
 /// Analog actuation configuration: a per-byte-index actuation map plus the loop
 /// poll cadence. Only used when `input_mode = Analog`.
 ///
 /// The map is keyed by the analog byte index (0..[`ANALOG_KEY_COUNT`], matching
 /// `AnalogFrame::pressures`). Each entry names the logical evdev key the engine
-/// resolves that physical key's bind by, plus its actuation thresholds.
+/// resolves that physical key's bind by, plus its actuation thresholds. The
+/// full map ships built in ([`default_analog_keys`]); config entries override
+/// single indices.
 ///
 /// [`ANALOG_KEY_COUNT`]: tartarust_protocol::ANALOG_KEY_COUNT
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +145,12 @@ pub struct AnalogConfig {
     /// here as the key `"5"`. The daemon parses the index back to a number when
     /// building the actuator (a non-numeric or out-of-range key is warned and
     /// skipped there), so the on-disk form stays a plain TOML table.
-    #[serde(default)]
+    ///
+    /// An absent table gets the full built-in map; a partial table overrides
+    /// only the indices it lists ([`Config::from_toml`] fills the rest). An
+    /// unmapped grid key in analog mode would be DEAD — DRIVER mode silences
+    /// the grid digitally — so no load path yields a partial map.
+    #[serde(default = "default_analog_keys")]
     pub keys: BTreeMap<String, AnalogKey>,
 }
 
@@ -114,11 +158,23 @@ fn default_poll_interval_ms() -> u64 {
     50
 }
 
+impl AnalogConfig {
+    /// Merge the built-in map under the configured one: each byte index absent
+    /// from `keys` gets its [`default_analog_keys`] entry. Configured entries
+    /// win, so a hand-tuned `[analog.keys.N]` table keeps its overrides but
+    /// cannot silently unmap the rest of the grid.
+    fn fill_default_keys(&mut self) {
+        for (index, key) in default_analog_keys() {
+            self.keys.entry(index).or_insert(key);
+        }
+    }
+}
+
 impl Default for AnalogConfig {
     fn default() -> Self {
         AnalogConfig {
             poll_interval_ms: default_poll_interval_ms(),
-            keys: BTreeMap::new(),
+            keys: default_analog_keys(),
         }
     }
 }
@@ -259,7 +315,8 @@ impl Config {
 
     /// Parse and validate a config from TOML text.
     pub fn from_toml(s: &str) -> Result<Self, StateError> {
-        let cfg: Config = toml::from_str(s)?;
+        let mut cfg: Config = toml::from_str(s)?;
+        cfg.analog.fill_default_keys();
         cfg.validate()?;
         Ok(cfg)
     }
@@ -535,8 +592,9 @@ mod tests {
         assert_eq!(cfg, back);
     }
 
-    /// `input_mode` defaults to digital and the `[analog]` table is optional, so
-    /// an existing (pre-analog) config still loads unchanged.
+    /// `input_mode` defaults to digital and the `[analog]` table is optional —
+    /// an existing (pre-analog) config still loads, and it gets the full
+    /// built-in analog map (the byte->key layout is a device-family constant).
     #[test]
     fn input_mode_defaults_to_digital_and_analog_optional() {
         let src = r#"
@@ -546,8 +604,39 @@ mod tests {
         "#;
         let cfg = Config::from_toml(src).expect("config without analog fields must load");
         assert_eq!(cfg.input_mode, InputMode::Digital);
-        assert!(cfg.analog.keys.is_empty());
+        assert_eq!(cfg.analog.keys, default_analog_keys());
+        assert_eq!(cfg.analog.keys.len(), 20);
+        assert_eq!(cfg.analog.keys["0"].key, "KEY_1");
+        assert_eq!(cfg.analog.keys["19"].key, "KEY_SPACE");
         assert_eq!(cfg.analog.poll_interval_ms, 50);
+    }
+
+    /// A partial `[analog.keys]` table overrides only the indices it lists —
+    /// the built-in map fills the rest, so one hand-tuned entry cannot
+    /// silently unmap (= kill, in DRIVER mode) the other 19 grid keys.
+    #[test]
+    fn partial_analog_map_merges_with_builtin() {
+        let src = r#"
+            default_profile = "default"
+            input_mode = "analog"
+            [analog.keys.0]
+            key = "KEY_GRAVE"
+            actuation_point = 0x40
+            [profiles.default]
+            name = "default"
+        "#;
+        let cfg = Config::from_toml(src).expect("partial analog map must load");
+        assert_eq!(cfg.analog.keys.len(), 20);
+        // The listed index keeps its overrides (release derives from its own
+        // actuation point).
+        let k0 = &cfg.analog.keys["0"];
+        assert_eq!(k0.key, "KEY_GRAVE");
+        assert_eq!(k0.actuation_point, 0x40);
+        assert_eq!(k0.release_point, 0x40 - DEFAULT_HYSTERESIS);
+        // An unlisted index gets the built-in entry.
+        let k19 = &cfg.analog.keys["19"];
+        assert_eq!(k19.key, "KEY_SPACE");
+        assert_eq!(k19.actuation_point, DEFAULT_ACTUATION_POINT);
     }
 
     /// A full `[analog]` section + `input_mode = "analog"` parses into the typed
@@ -579,6 +668,9 @@ mod tests {
         let cfg = Config::from_toml(src).expect("analog config must parse");
         assert_eq!(cfg.input_mode, InputMode::Analog);
         assert_eq!(cfg.analog.poll_interval_ms, 20);
+        // The two listed indices override (byte 5 is KEY_TAB in the built-in
+        // map, KEY_Q here); the built-in map fills the other 18.
+        assert_eq!(cfg.analog.keys.len(), 20);
 
         let k5 = &cfg.analog.keys["5"];
         assert_eq!(k5.key, "KEY_Q");

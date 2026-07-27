@@ -13,9 +13,9 @@ Synapse (original design, feature-parity — not a 1:1 clone).
   OS-side (evdev grab → uinput emit) and needs *no* Razer HID protocol, so it
   runs fully in parallel with the lighting/protocol work.
 - **v1 must-haves:** Lighting/Chroma · Remap+Hypershift+Macros · Profiles+per-app
-  · **Analog actuation** (the Pro's headline feature — *gated* on the feasibility
-  research thread; if the config protocol is undocumented it slips to a later
-  phase and is unblocked by a Synapse USB-capture sub-project).
+  · **Analog actuation** (the Pro's headline feature — the gate is resolved: the
+  pressure protocol is reverse-engineered and the byte→key map is a
+  device-family constant, built into the daemon).
 
 ## Hard constraints
 
@@ -78,17 +78,18 @@ daemon, UI, and CLI teams build against it independently.
 - **M4 — Profiles & per-app**
   Multiple profiles, focused-application auto-switch, onboard-memory slots.
 
-- **M5 — Analog actuation** *(gated)*
-  If documented: actuation-point + dual-step config over `tartarust-hid` + UI.
-  If not: Synapse USB-capture sub-project (Windows VM + passthrough + usbmon),
-  then implement.
+- **M5 — Analog actuation** *(shipped)*
+  DRIVER-mode pressure reads, per-key actuation points + dual-step, calibration
+  UI. The byte→key map is a device-family constant (hardware-confirmed,
+  identical across units) and is built into the daemon — no per-unit discovery.
 
 ### Parallel workstreams after M0
 1. Daemon/remap (M1) · 2. Protocol+HID/lighting (M2) · 3. UI shell+screens (M3)
 · 4. CLI · 5. Analog RE investigation (M5, async).
 
 ## Open questions / risks
-- Analog-actuation protocol availability (gating; see research thread).
+- ~~Analog-actuation protocol availability~~ — resolved: protocol
+  reverse-engineered, byte→key map confirmed constant across units.
 - webkit2gtk rendering correctly under nested headless Wayland (render chain).
 - Exact control interface + `transaction_id` for `0x0244` (confirm from source).
 - Grabbing input nodes vs. the device's onboard default keymap interactions.
