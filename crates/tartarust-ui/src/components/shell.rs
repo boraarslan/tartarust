@@ -164,6 +164,21 @@ impl Shell {
     }
 }
 
+/// A statusbar UI-scale stepper (± [`theme::SCALE_STEP`]).
+fn scale_button(id: &'static str, glyph: &'static str, delta: f32) -> impl IntoElement {
+    div()
+        .id(id)
+        .px(theme::sp(5.))
+        .rounded(theme::sp(theme::RADIUS_SM))
+        .text_color(theme::mute())
+        .hover(|s| s.bg(theme::panel_1()).text_color(theme::ink()))
+        .cursor_pointer()
+        .on_click(move |_: &ClickEvent, _, cx| {
+            theme::set_scale(theme::scale() + delta, cx);
+        })
+        .child(glyph)
+}
+
 /// A `.wbtn` window-control button: machined stand-in for the OS titlebar
 /// buttons. Presses must not bubble to the masthead's drag handler.
 fn window_button(
@@ -319,6 +334,26 @@ impl Render for Shell {
                         }))
                         .child("Save"),
                 )
+                // Discard: the inverse — drop every unsaved session edit and
+                // restore the daemon's last-saved config. Quiet ghost chassis:
+                // it destroys work, but only session-local work.
+                .child(
+                    div()
+                        .id("discard-changes")
+                        .px(theme::sp(10.))
+                        .py(theme::sp(4.))
+                        .rounded(theme::sp(theme::RADIUS_SM))
+                        .border_1()
+                        .border_color(theme::line())
+                        .text_color(theme::dim())
+                        .text_size(theme::sp(12.))
+                        .hover(|s| s.text_color(theme::ink()).border_color(theme::mute()))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            store::discard_changes(&this.store, cx);
+                        }))
+                        .child("Discard"),
+                )
             });
 
         let window_controls = div()
@@ -364,12 +399,16 @@ impl Render for Shell {
             .border_color(theme::line_soft())
             .children(Screen::ALL.map(|s| {
                 let active = s == screen;
+                // The stylesheet's `.tab`: engraved MONO caps, not body sans —
+                // the faceplate's section switches are typographic engravings.
                 div()
                     .id(s.label())
-                    .px(theme::sp(12.))
-                    .py(theme::sp(9.))
-                    .text_size(theme::sp(12.5))
-                    .text_color(if active { theme::ink() } else { theme::dim() })
+                    .px(theme::sp(14.))
+                    .py(theme::sp(10.))
+                    .font_family(mono.clone())
+                    .text_size(theme::sp(11.))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(if active { theme::ink() } else { theme::mute() })
                     .border_b_2()
                     .border_color(if active {
                         theme::rust()
@@ -390,7 +429,7 @@ impl Render for Shell {
                         this.ensure_screen(s, window, cx);
                         cx.notify();
                     }))
-                    .child(s.label())
+                    .child(s.label().to_uppercase())
             }));
 
         // --- Content (stubs shrink as Phases 2–4 land) ----------------------
@@ -493,6 +532,17 @@ impl Render for Shell {
                         .child("UNSAVED SESSION"),
                 )
             })
+            // Runtime UI-scale control: every dimension derives from
+            // theme::sp, so ± here re-densifies the whole app live.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(theme::sp(4.))
+                    .child(scale_button("ui-scale-down", "–", -theme::SCALE_STEP))
+                    .child(div().child(format!("UI {:.0}%", theme::scale() * 100.)))
+                    .child(scale_button("ui-scale-up", "+", theme::SCALE_STEP)),
+            )
             .child(div().child(concat!("V", env!("CARGO_PKG_VERSION"))));
 
         div()
@@ -539,6 +589,12 @@ impl Render for Shell {
                         .border_1()
                         .border_color(theme::line())
                         .shadow_lg()
+                        // The dismiss overlay closes on mouse-DOWN and covers
+                        // the whole window — including under this list. Without
+                        // this guard the down over a row closed the picker and
+                        // re-rendered BEFORE the up, so the row's click never
+                        // completed (user review: switching never fired).
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .children(profile_names.iter().enumerate().map(|(i, name)| {
                             let switch_to = name.clone();
                             let is_active = i == active_idx;

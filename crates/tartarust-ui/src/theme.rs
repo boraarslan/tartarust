@@ -9,16 +9,38 @@
 //!   red   #D0574C  destructive, macro record
 //! Nothing is colored for decoration; there are no glows except actual LEDs.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use gpui::{App, Global, Pixels, Rgba, SharedString, px, rgb, rgba};
 
 /// Global UI scale. Every dimension in the UI goes through [`sp`] ("scaled
-/// pixels"), so density is tuned in exactly one place. 1.5 per user review of
-/// the 1.0 port — the CSS-era sizes read too small outside a webview.
-pub const SCALE: f32 = 1.5;
+/// pixels"), so density is tuned in exactly one place — and adjustable at
+/// runtime (the statusbar's UI ± control). Default 1.5 per user review of the
+/// 1.0 port: the CSS-era sizes read too small outside a webview.
+pub const DEFAULT_SCALE: f32 = 1.5;
+pub const MIN_SCALE: f32 = 1.0;
+pub const MAX_SCALE: f32 = 2.25;
+pub const SCALE_STEP: f32 = 0.25;
+
+/// The live scale, stored as f32 bits so [`sp`] stays context-free (it is
+/// called from every render path, most without an `App` handle).
+static SCALE_BITS: AtomicU32 = AtomicU32::new(DEFAULT_SCALE.to_bits());
+
+pub fn scale() -> f32 {
+    f32::from_bits(SCALE_BITS.load(Ordering::Relaxed))
+}
+
+/// Set the scale (clamped) and re-render every window — layout, text, and
+/// spacing all re-derive through [`sp`] on the next frame.
+pub fn set_scale(scale: f32, cx: &mut App) {
+    let clamped = scale.clamp(MIN_SCALE, MAX_SCALE);
+    SCALE_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+    cx.refresh_windows();
+}
 
 /// A scaled logical dimension: `sp(13.)` = 13 design-px at the global scale.
 pub fn sp(v: f32) -> Pixels {
-    px(v * SCALE)
+    px(v * scale())
 }
 
 // --- Surfaces ----------------------------------------------------------------
@@ -121,21 +143,38 @@ pub struct Fonts {
 impl Global for Fonts {}
 
 /// Resolve the font stacks against the platform text system and stash the
-/// result as a global. The last stack entry is the unconditional fallback.
+/// result as a global.
+///
+/// Matching is normalized (case/space/hyphen-insensitive) because the text
+/// system's family names don't always match fontconfig's spelling — and an
+/// unmatched literal falls through to the platform DEFAULT face (a serif on
+/// this stack), which is exactly the wrong voice. The class-hint pass makes
+/// the worst case "some installed sans/mono", never the serif default.
 pub fn init(cx: &mut App) {
     let installed = cx.text_system().all_font_names();
-    let pick = |stack: &[&'static str]| -> SharedString {
-        stack
-            .iter()
-            .find(|f| installed.iter().any(|i| i == *f))
-            .copied()
-            .unwrap_or(stack[stack.len() - 1])
-            .into()
+    let norm = |s: &str| s.to_lowercase().replace([' ', '-', '_'], "");
+    let pick = |stack: &[&'static str], class_hint: &str| -> SharedString {
+        for want in stack {
+            if let Some(hit) = installed.iter().find(|i| norm(i) == norm(want)) {
+                return hit.clone().into();
+            }
+        }
+        // Family variants ("IBM Plex Sans Text") and PostScript-ish names.
+        for want in stack {
+            if let Some(hit) = installed.iter().find(|i| norm(i).contains(&norm(want))) {
+                return hit.clone().into();
+            }
+        }
+        if let Some(hit) = installed.iter().find(|i| norm(i).contains(class_hint)) {
+            return hit.clone().into();
+        }
+        stack[stack.len() - 1].into()
     };
     let fonts = Fonts {
-        mono: pick(&MONO_STACK),
-        sans: pick(&SANS_STACK),
+        mono: pick(&MONO_STACK, "mono"),
+        sans: pick(&SANS_STACK, "sans"),
     };
+    tracing::info!(mono = %fonts.mono, sans = %fonts.sans, "resolved font stacks");
     cx.set_global(fonts);
 }
 

@@ -137,6 +137,14 @@ pub enum Request {
         /// Advisory only — persistence is whole-file.
         name: Option<String>,
     },
+    /// Discard all pending session changes: the inverse of
+    /// [`Request::SaveProfile`]. Restores the daemon's live config from its
+    /// last-saved snapshot (binds, lighting, profiles, macros, actuation,
+    /// auto-switch) and re-activates, so the device drops the session edits
+    /// too. The unsaved-changes flag reads clean afterwards. If the active
+    /// profile was created this session, activation falls back to the saved
+    /// default profile.
+    DiscardChanges,
     /// Set how a profile's thumb stick quantizes direction (eight/four-way).
     SetThumbAxisMode {
         /// Profile to edit.
@@ -454,6 +462,7 @@ mod tests {
                 | Request::SetProfileLinkedApp { .. }
                 | Request::SetDefaultProfile { .. }
                 | Request::SaveProfile { .. }
+                | Request::DiscardChanges
                 | Request::SetThumbAxisMode { .. }
                 | Request::ExportProfile { .. }
                 | Request::ImportProfile { .. }
@@ -495,6 +504,7 @@ mod tests {
             Request::SaveProfile {
                 name: Some("fps".into()),
             },
+            Request::DiscardChanges,
             Request::SetThumbAxisMode {
                 profile: "fps".into(),
                 mode: ThumbAxisMode::Four,

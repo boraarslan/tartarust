@@ -15,9 +15,21 @@ use crate::theme;
 pub fn page_head(sub: &'static str) -> impl IntoElement {
     div()
         .pb(theme::sp(14.))
-        .text_size(theme::sp(12.))
+        .text_size(theme::sp(12.5))
         .text_color(theme::dim())
         .child(sub)
+}
+
+/// One-frame render nudge after creating or re-seeding sliders. The
+/// gpui-component slider caches its track bounds during paint SILENTLY (no
+/// notify), so a slider that has never painted draws its thumb at x=0 on its
+/// first frame; a follow-up notify lets the second frame position the thumb
+/// with the freshly cached bounds. Harmless when bounds were already cached.
+pub fn nudge_next_frame<V: 'static>(cx: &mut gpui::Context<V>) {
+    cx.spawn(async move |this, cx| {
+        let _ = this.update(cx, |_, cx| cx.notify());
+    })
+    .detach();
 }
 
 /// A status LED dot. `on` colors are literal annunciators (live/amber/red);

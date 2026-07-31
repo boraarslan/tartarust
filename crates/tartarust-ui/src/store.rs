@@ -359,6 +359,34 @@ pub fn switch_profile_and_reload(store: &Entity<AppState>, name: String, cx: &mu
     .detach();
 }
 
+/// Discard all pending session changes (the Discard affordance, the inverse
+/// of [`save_profile`]). The daemon restores its live config from the
+/// last-saved snapshot and re-activates; on `Ack` the UI resyncs wholesale —
+/// the restore can move anything (binds, lighting, profiles, macros), so a
+/// full authoritative reload is the only honest refresh. A rejection or
+/// offline send leaves local state alone (the affordance is hidden offline).
+pub fn discard_changes(store: &Entity<AppState>, cx: &mut App) {
+    let store = store.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_executor()
+            .spawn(async move { ipc::send(&Request::DiscardChanges) })
+            .await;
+        match result {
+            Ok(Response::Ack) => {
+                mark_online(&store, cx);
+                resync(&store, cx).await;
+            }
+            Ok(Response::Error { message }) => {
+                tracing::warn!("daemon rejected discard: {message}");
+            }
+            Ok(_) => {}
+            Err(e) => mark_offline(&store, &e.to_string(), cx),
+        }
+    })
+    .detach();
+}
+
 /// A transport-level failure (connect/write/read) means the daemon is
 /// unreachable: log it and flip the store into the honest offline state so the
 /// whole UI falls back to last-known rendering. A daemon-sent

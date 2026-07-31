@@ -51,7 +51,9 @@ use gpui_component::slider::{SliderEvent, SliderState};
 
 use tartarust_ipc::{AnalogKeyConfig, AnalogState, DEFAULT_ACTUATION_POINT, DEFAULT_RELEASE_POINT};
 
-use crate::components::widgets::{btn_ghost, labeled_slider, page_head, switch_row};
+use crate::components::widgets::{
+    btn_ghost, labeled_slider, nudge_next_frame, page_head, switch_row,
+};
 use crate::components::{
     CapPhase, CapPointer, KeyPicker, KeyPickerEvent, Keypad, KeypadMode, key_picker_trigger,
 };
@@ -127,6 +129,14 @@ pub struct Calibration {
     /// (the cage-harness path) — we render an honest offline state, never fake
     /// bars.
     analog: Option<AnalogState>,
+    /// True once the FIRST poll has answered (success or failure). Gates the
+    /// offline banner: before the first answer, "no analog state yet" is not
+    /// evidence of anything, and showing the banner flashed it on every screen
+    /// entry while the daemon was perfectly reachable.
+    polled_once: bool,
+    /// Displayed per-key pressures, gliding toward the polled values — the
+    /// poll ticks at 100 ms and painting those raw steps reads as stutter.
+    smooth: HashMap<String, f32>,
     /// Edit Mode: the docked bulk editor is open iff this is set.
     edit_mode: bool,
     /// The multi-selection (Edit Mode's target, and a drag's accumulator).
@@ -232,16 +242,21 @@ impl Calibration {
         // background executor; the result lands back on the foreground. Writing
         // only on a real change keeps an idle keypad (the same frame every tick)
         // from repainting this view 10x/second.
+        // Fetch-first, THEN tick: the first poll answers immediately instead of
+        // one interval late, which both shrinks the not-yet-polled window and
+        // keeps the offline banner from flashing on screen entry (see
+        // `polled_once`).
         let poll = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(POLL_INTERVAL_MS))
-                    .await;
                 let next = cx
                     .background_executor()
                     .spawn(async { ipc::get_analog_state() })
                     .await;
                 let alive = this.update(cx, |this, cx| {
+                    if !this.polled_once {
+                        this.polled_once = true;
+                        cx.notify();
+                    }
                     if this.analog != next {
                         this.analog = next;
                         cx.notify();
@@ -250,12 +265,17 @@ impl Calibration {
                 if alive.is_err() {
                     return; // the view (or the app) is gone
                 }
+                cx.background_executor()
+                    .timer(Duration::from_millis(POLL_INTERVAL_MS))
+                    .await;
             }
         });
 
         let mut this = Self {
             store,
             analog: None,
+            polled_once: false,
+            smooth: HashMap::new(),
             edit_mode: false,
             multi: BTreeSet::new(),
             dragging: false,
@@ -300,6 +320,42 @@ impl Calibration {
                     a.pressures.get(cfg.index as usize).copied().unwrap_or(0),
                 )
             })
+            .collect()
+    }
+
+    /// Advance the DISPLAYED pressures one exponential step toward the live
+    /// poll values and return them for the keypad. The poll ticks at 100 ms;
+    /// painting those steps raw reads as stutter, so the fill glides at frame
+    /// rate — while any key is still gliding, the next frame is requested so
+    /// the animation keeps running between poll ticks.
+    fn step_pressure_smoothing(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> HashMap<String, u8> {
+        let target = self.pressures_map();
+        // Keys that vanished (daemon restart, mode change) stop animating.
+        self.smooth.retain(|k, _| target.contains_key(k));
+        let mut animating = false;
+        for (key, &t) in &target {
+            let shown = self.smooth.entry(key.clone()).or_insert(t as f32);
+            let delta = t as f32 - *shown;
+            if delta.abs() < 1.0 {
+                *shown = t as f32;
+            } else {
+                *shown += delta * 0.35;
+                animating = true;
+            }
+        }
+        if animating {
+            let entity = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = entity.update(cx, |_, cx| cx.notify());
+            });
+        }
+        self.smooth
+            .iter()
+            .map(|(k, v)| (k.clone(), v.round() as u8))
             .collect()
     }
 
@@ -1005,7 +1061,8 @@ impl Calibration {
 }
 
 impl Render for Calibration {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let smoothed_pressures = self.step_pressure_smoothing(window, cx);
         let mono = theme::mono(cx);
         let selected = self.store.read(cx).selected;
 
@@ -1043,6 +1100,9 @@ impl Render for Calibration {
         // (so the board reads as "keys" in every state, consistent with the other
         // screens); the banner just explains why there is no live pressure yet.
         let notice = match self.analog.as_ref() {
+            // Before the first poll answers, "no state yet" is not evidence:
+            // showing the banner here flashed it on every screen entry.
+            None if !self.polled_once => None,
             None => Some(banner(
                 "○",
                 "Daemon offline",
@@ -1089,7 +1149,7 @@ impl Render for Calibration {
             // Only the analog caps (19 main keys + spacebar) are calibratable,
             // so the 8-way pad, scroll wheel, and thumb button are hidden here.
             .analog_only(true)
-            .pressures(Some(self.pressures_map()))
+            .pressures(Some(smoothed_pressures))
             .multi_selected(self.multi.clone())
             .customized(self.customized_set())
             .selected(selected)
@@ -1354,18 +1414,6 @@ fn seed_slider(slider: &Entity<SliderState>, min: f32, max: f32, value: u8, cx: 
         *state = prev.min(min).max(max).step(1.).default_value(value as f32);
         cx.notify();
     });
-}
-
-/// One-frame render nudge after seeding never-painted sliders. The slider
-/// caches its track bounds during paint SILENTLY (no notify), so a slider's
-/// very first frame draws the thumb at x=0; a follow-up notify on the next
-/// tick lets the second frame position the thumb with the freshly cached
-/// bounds. Harmless when the bounds were already cached (one extra render).
-fn nudge_next_frame(cx: &mut Context<Calibration>) {
-    cx.spawn(async move |this, cx| {
-        let _ = this.update(cx, |_, cx| cx.notify());
-    })
-    .detach();
 }
 
 /// Every analog-calibratable cap: the 19 grid keys plus the spacebar. The thumb

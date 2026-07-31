@@ -182,6 +182,11 @@ impl Lighting {
         })
         .detach();
 
+        // First-paint fix: the slider caches its track bounds silently during
+        // paint, so a never-painted slider draws its thumb at x=0 on the first
+        // frame regardless of value (user review: brightness showed unseeded).
+        crate::components::widgets::nudge_next_frame(cx);
+
         Self { store, brightness }
     }
 
