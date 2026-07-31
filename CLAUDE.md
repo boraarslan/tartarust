@@ -1,7 +1,7 @@
 # tartarust — project instructions
 
 A from-scratch userspace driver suite for the **Razer Tartarus Pro** keypad
-(`USB 1532:0244`): a device-owning daemon + a CLI + a Dioxus desktop UI, all in
+(`USB 1532:0244`): a device-owning daemon + a CLI + a GPUI desktop UI, all in
 one Cargo workspace. See [`README.md`](README.md) for the user-facing overview
 and [`docs/PLAN.md`](docs/PLAN.md) for milestones.
 
@@ -18,7 +18,7 @@ crates:
 | `tartarust-ipc` | lib | daemon↔client wire schema + shared domain types |
 | `tartarust-daemon` | `tartarust-daemon` | sole device owner; evdev→uinput remap engine + IPC server |
 | `tartarust-cli` | `tartarust` | scriptable client + diagnostics |
-| `tartarust-ui` | `tartarust-ui` | Dioxus desktop app (thin IPC client) |
+| `tartarust-ui` | `tartarust-ui` | GPUI desktop app (thin IPC client) |
 
 ## Versioning
 
@@ -27,7 +27,7 @@ crates:
   package plus all six member crates inherit it with `version.workspace = true`.
   Do not add a literal `version = "x.y.z"` to any member crate; that would let
   them drift.
-- **Current version: `0.1.1`.** To release a new version, edit that single
+- **Current version: `0.2.0`.** To release a new version, edit that single
   `[workspace.package].version` field and everything moves together.
 - **Semver intent:** pre-1.0, treat `0.MINOR.PATCH` as breaking-allowed on
   `MINOR`. The `tartarust-ipc` wire schema is the compatibility surface between a
@@ -38,7 +38,7 @@ crates:
 ## Common commands
 
 ```sh
-cargo build --release        # all binaries (UI needs webkit2gtk-4.1 + gtk3)
+cargo build --release        # all binaries (UI: gpui — needs libxkbcommon + fontconfig)
 cargo test --workspace       # unit + integration tests
 cargo install --path .       # installs tartarust-daemon, tartarust, tartarust-ui
 cargo build --bin tartarust-ui && ./scripts/headless-screenshot.sh ./target/debug/tartarust-ui

@@ -569,6 +569,11 @@ impl Engine {
             // an Error if the write fails (so the client learns the outcome — see
             // `pipeline::spawn_engine`).
             Request::SaveProfile { .. } => (Response::Ack, vec![]),
+            // Shutdown is acked here; the daemon loop performs the actual exit
+            // AFTER the reply is sent (see `pipeline::spawn_engine`) so the
+            // client learns the request landed before the socket goes away.
+            Request::Shutdown => (Response::Ack, vec![]),
+            Request::DiscardChanges => self.discard_changes(),
             Request::SetThumbAxisMode { profile, mode } => self.set_thumb_axis_mode(profile, mode),
             Request::ExportProfile { name } => self.export_profile(name),
             Request::ImportProfile {
@@ -746,6 +751,43 @@ impl Engine {
             });
         }
         (Response::Ack, vec![])
+    }
+
+    /// Discard every unsaved session edit: restore the live config from the
+    /// last-saved snapshot (`self.saved`) and re-activate, so the device drops
+    /// the session's binds/lighting too. `is_dirty` reads clean afterwards by
+    /// construction — every field it diffs is restored from the snapshot.
+    fn discard_changes(&mut self) -> (Response, Vec<DeviceCmd>) {
+        let saved = self.saved.clone();
+        self.configured_default = saved.default_profile;
+        self.auto_switch = saved.auto_switch;
+        self.tray = saved.tray;
+        self.input_mode = saved.input_mode;
+        self.analog = saved.analog;
+        self.profiles = saved.profiles;
+        self.macros = saved.macros;
+        // Push every restored actuation config to a running analog source, the
+        // same live path `SetActuation` uses — otherwise the actuator would
+        // keep the discarded thresholds until restart.
+        if let Some(tx) = &self.analog_update_tx {
+            for (index, key) in &self.analog.keys {
+                if let Ok(index) = index.parse::<usize>() {
+                    let _ = tx.send(crate::analog_source::ActuationUpdate {
+                        index,
+                        key: key.clone(),
+                    });
+                }
+            }
+        }
+        // The active profile may have been created this session — gone after
+        // the restore. Fall back to the (restored) configured default.
+        let active = if self.profiles.contains_key(&self.active_profile) {
+            self.active_profile.clone()
+        } else {
+            self.configured_default.clone()
+        };
+        let cmds = self.activate_profile(&active);
+        (Response::Ack, cmds)
     }
 
     fn create_profile(&mut self, name: String) -> (Response, Vec<DeviceCmd>) {
@@ -2328,6 +2370,51 @@ mod tests {
         assert_eq!(update.index, 5);
         assert_eq!(update.key.actuation_point, 0x40);
         assert_eq!(update.key.key, "KEY_Q");
+    }
+
+    /// Discard restores the live config from the last-saved snapshot: a
+    /// dirtying edit is dropped (engine reads clean, the value reverts), and a
+    /// profile created this session disappears with activation falling back to
+    /// the saved default.
+    #[test]
+    fn discard_restores_saved_config_and_reactivates() {
+        let mut e = Engine::new(cfg(vec![], vec![]));
+        let before = e.config_snapshot();
+
+        // Dirty the session two ways: a lighting edit + a new profile that
+        // then becomes active.
+        let (resp, _) = e.apply(Request::SetBrightness { level: 7 }, "t");
+        assert_eq!(resp, Response::Ack);
+        let (resp, _) = e.apply(
+            Request::CreateProfile {
+                name: "scratch".into(),
+            },
+            "t",
+        );
+        assert_eq!(resp, Response::Ack);
+        let (resp, _) = e.apply(
+            Request::SwitchProfile {
+                name: "scratch".into(),
+            },
+            "t",
+        );
+        assert_eq!(resp, Response::Ack);
+        assert!(e.is_dirty(), "session edits must read as unsaved");
+
+        let (resp, _) = e.apply(Request::DiscardChanges, "t");
+        assert_eq!(resp, Response::Ack);
+        assert!(!e.is_dirty(), "a discarded session must read clean");
+        assert_eq!(
+            e.config_snapshot(),
+            before,
+            "discard must restore the exact last-saved config"
+        );
+        // The session-created active profile is gone: activation fell back.
+        let (resp, _) = e.apply(Request::GetStatus, "t");
+        let Response::Status(s) = resp else {
+            panic!("expected Status");
+        };
+        assert_eq!(s.active_profile, s.default_profile);
     }
 
     /// Save semantics: unsaved state is a live DIFF against the last-saved

@@ -1,0 +1,14 @@
+# Phase 0 spike (docs/GPUI_MIGRATION.md): prove GPUI renders under the
+# headless cage harness. Exact pins — gpui is pre-1.0 and breaks often.
+[package]
+name = "gpui-hello"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Default features of the crates.io release already cover Linux:
+# ["font-kit", "wayland", "x11", "windows-manifest"]. The gpui_platform
+# companion crate exists only on zed git main, NOT in this release.
+[dependencies]
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"

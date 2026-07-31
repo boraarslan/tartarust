@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+# spike/ holds throwaway GPUI validation crates (docs/GPUI_MIGRATION.md Phase 0)
+# with their own lockfiles — deliberately outside the workspace.
+exclude = ["spike"]
 members = [
     "crates/tartarust-protocol",
     "crates/tartarust-hid",
@@ -25,7 +28,7 @@ default-members = [
 [workspace.package]
 # One version for the whole workspace: every crate sets `version.workspace = true`
 # so a single bump here moves the root package and all six member crates together.
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 authors = ["bora.rs <bora.rs@pm.me>"]

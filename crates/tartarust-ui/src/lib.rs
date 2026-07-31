@@ -1,18 +1,19 @@
-//! `tartarust-ui` — Dioxus desktop front-end for the Razer Tartarus Pro.
+//! `tartarust-ui` — GPUI desktop front-end for the Razer Tartarus Pro.
 //!
 //! A Synapse-*inspired* (not cloned) control surface: dark instrument theme,
 //! Razer green used only for active state. Five screens — Customize, Lighting,
-//! Calibration, Macros, Profiles — wired over a router with a persistent
-//! sidebar. State lives in a single `Signal<AppState>` global store (mock data
-//! for now; see `model.rs` for the promotion-to-IPC list).
+//! Calibration, Macros, Profiles — behind a persistent shell. State lives in a
+//! single `Entity<AppState>` store (mock data offline; `store` overlays live
+//! daemon state when reachable).
 //!
 //! ALWAYS run inside the headless `cage` harness via
-//! `scripts/headless-screenshot.sh` — never spawn a window on real displays.
+//! `scripts/headless-screenshot.sh` (with `HEADLESS_WLR_RENDERER=gles2` — GPUI
+//! renders through Vulkan and needs a dmabuf-capable compositor) — never spawn
+//! a window on real displays.
 //!
-//! Lib-only crate: the app root (routes, store, launcher) lives HERE so the
-//! internal `crate::Route` / `crate::use_store` paths keep resolving, and the
-//! workspace's root package exposes the `tartarust-ui` bin as a thin shim over
-//! [`run_app`] — one `cargo install --path .` ships every binary.
+//! Lib-only crate: the workspace's root package exposes the `tartarust-ui` bin
+//! as a thin shim over [`run_app`] — one `cargo install --path .` ships every
+//! binary.
 //!
 //! ## Desktop integration (see [`desktop`])
 //!
@@ -29,25 +30,29 @@ mod desktop;
 mod ipc;
 mod model;
 mod screens;
-mod style;
+mod store;
+mod theme;
 
-use std::time::Duration;
-
-use dioxus::desktop::{Config, LogicalSize, WindowBuilder};
-use dioxus::prelude::*;
+use gpui::{
+    App, AppContext as _, Application, Bounds, WindowBounds, WindowDecorations, WindowOptions, size,
+};
 
 use components::Shell;
-use model::{AppState, mock_state};
-use screens::{Calibration, Customize, Lighting, Macros, Profiles};
 
-/// Binary entry point: build the window config and launch the Dioxus app.
-/// Called by the root package's `src/bin/tartarust-ui.rs` shim — and by nothing
-/// else during dev (headless-cage rule above).
+/// Binary entry point: set up logging/desktop integration and launch the GPUI
+/// app. Called by the root package's `src/bin/tartarust-ui.rs` shim — and by
+/// nothing else during dev (headless-cage rule above).
 pub fn run_app() {
-    // Idempotent (checks `has_been_set`) and the same initializer `launch`
-    // calls later — installing it early makes the pre-launch desktop/daemon
-    // tracing lines below actually visible.
-    dioxus::logger::initialize_default();
+    // `RUST_LOG` wins; default to info so the desktop/daemon startup lines
+    // below are visible (parity with the old `dioxus::logger` default) — but
+    // cap gpui's chatty render internals, which log every texture at info.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new("info,naga=warn,blade_graphics=warn,zbus=warn")
+            }),
+        )
+        .init();
 
     // Explicit CLI form: refresh the desktop entry + icon and exit — no
     // window. Deliberately ignores the NO_DESKTOP_INSTALL gate (an explicit
@@ -62,98 +67,42 @@ pub fn run_app() {
     desktop::ensure_desktop_integration();
     desktop::ensure_daemon_running();
 
-    // No `dx` here: we run a plain cargo binary under cage. Configure the wry
-    // window directly and strip the default GTK menubar (`with_menu(None)`).
-    // Decorations are off: the masthead doubles as the titlebar (drag +
-    // window controls live in `Shell`); tao still hit-tests the borders of
-    // undecorated windows so edge-resize keeps working.
-    // Window icon covers X11 taskbar/alt-tab; on Wayland compositors resolve
-    // the icon from the installed desktop entry instead (see `desktop`).
-    let window = WindowBuilder::new()
-        .with_title("tartarust")
-        .with_window_icon(desktop::window_icon())
-        .with_decorations(false)
-        .with_inner_size(LogicalSize::new(1280.0, 800.0));
+    Application::new().run(|cx: &mut App| {
+        // Order matters: component init installs the default theme, ours then
+        // overrides it with the bench-instrument palette.
+        gpui_component::init(cx);
+        theme::init(cx);
+        theme::apply_component_theme(cx);
 
-    let config = Config::new()
-        .with_window(window)
-        .with_menu(None)
-        .with_background_color((19, 17, 16, 255));
+        // The one global store. Starts as the offline mock so the UI renders
+        // before (and without) the daemon; the loader overlays live state if
+        // the daemon answers (with a retry window if we just spawned it).
+        let store = cx.new(|_| model::mock_state());
+        store::spawn_initial_load(store.clone(), cx);
 
-    dioxus::LaunchBuilder::desktop()
-        .with_cfg(config)
-        .launch(App);
-}
-
-/// Routes. Every screen is wrapped in the persistent [`Shell`] layout.
-#[derive(Clone, Debug, PartialEq, Routable)]
-#[rustfmt::skip]
-pub enum Route {
-    #[layout(Shell)]
-        #[route("/")]
-        Customize {},
-        #[route("/lighting")]
-        Lighting {},
-        #[route("/calibration")]
-        Calibration {},
-        #[route("/macros")]
-        Macros {},
-        #[route("/profiles")]
-        Profiles {},
-}
-
-#[allow(non_snake_case)]
-fn App() -> Element {
-    // The one global store. Starts as the offline mock so the UI renders before
-    // (and without) the daemon; the loader below overlays live state if present.
-    let mut store = use_context_provider(|| Signal::new(mock_state()));
-
-    // Initial load: probe the daemon on mount. On success, overlay live state.
-    // If startup just autostarted the daemon, it needs a moment to grab the
-    // device and open its socket — retry briefly (inside the async resource,
-    // so first render is never blocked) instead of settling into offline.
-    // When nothing was spawned (daemon deliberately absent, e.g. the cage
-    // harness) keep the single probe: the offline mock stays, instantly.
-    use_resource(move || async move {
-        // ~12 × 500ms ≈ 6s: generous for daemon startup (device grab + config
-        // load), short enough that a crash-looping daemon leaves us offline fast.
-        const SPAWN_RETRIES: u32 = 12;
-        const RETRY_DELAY: Duration = Duration::from_millis(500);
-
-        // Base every attempt on the CURRENT store, not a fresh mock_state():
-        // the UI is fully interactive during the retry window, and overlaying
-        // live state onto a pristine mock would wipe whatever the user did in
-        // the meantime (selected key, edit layer, macro selection) the moment
-        // a retry lands. `peek()` reads WITHOUT subscribing — a plain read
-        // would make this resource re-run on every store write, spawning an
-        // IPC load per keystroke.
-        let base = store.peek().clone();
-        if let Some(live) = ipc::load_state(base).await {
-            store.set(live);
-            return;
-        }
-        if !desktop::daemon_was_spawned() {
-            return;
-        }
-        for _ in 0..SPAWN_RETRIES {
-            tokio::time::sleep(RETRY_DELAY).await;
-            let base = store.peek().clone();
-            if let Some(live) = ipc::load_state(base).await {
-                store.set(live);
-                return;
-            }
-        }
+        // Design size 1280×800, scaled with the rest of the UI (theme::SCALE)
+        // so the layout is identical at any density.
+        let bounds = Bounds::centered(None, size(theme::sp(1280.), theme::sp(800.)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                // Client-side decorations: the masthead doubles as the
+                // titlebar (drag + window controls live in `Shell`). An early
+                // "CSD renders black" scare was a harness first-present race,
+                // since fixed with capture retries — Client verifies clean.
+                window_decorations: Some(WindowDecorations::Client),
+                // Wayland app_id / X11 WM_CLASS — MUST match the installed
+                // desktop entry basename (see `desktop::WM_CLASS`).
+                app_id: Some(desktop::WM_CLASS.into()),
+                ..Default::default()
+            },
+            |window, cx| {
+                // gpui-component widgets (popovers, modals, inputs) need a
+                // `Root` at the window's first level for their layer stack.
+                let shell = cx.new(|cx| Shell::new(store.clone(), window, cx));
+                cx.new(|cx| gpui_component::Root::new(shell, window, cx))
+            },
+        )
+        .expect("failed to open the tartarust-ui window");
     });
-
-    rsx! {
-        // Inject the whole stylesheet once. This is the loading path proven to
-        // render under the bare-cargo + cage harness (no asset! pipeline).
-        style { {style::APP_CSS} }
-        Router::<Route> {}
-    }
-}
-
-/// Convenience: read+write access to the global store from any component.
-pub fn use_store() -> Signal<AppState> {
-    use_context::<Signal<AppState>>()
 }

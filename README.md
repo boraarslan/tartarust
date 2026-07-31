@@ -1,9 +1,9 @@
 # tartarust
 
 A from-scratch Linux driver and control app for the **Razer Tartarus Pro** keypad
-(`USB 1532:0244`), written in Rust, with a [Dioxus](https://dioxuslabs.com)
-desktop UI styled after Razer Synapse (an original design — not a clone). The
-name is just *Tartarus* + *Rust*.
+(`USB 1532:0244`), written in Rust, with a [GPUI](https://gpui.rs) desktop UI
+styled after Razer Synapse (an original design — not a clone). The name is just
+*Tartarus* + *Rust*.
 
 No kernel module, no OpenRazer. A userspace daemon owns the device over `hidraw`
 feature reports + `evdev`/`uinput`, and the UI/CLI drive it over a local IPC
@@ -39,7 +39,7 @@ A Cargo workspace; core is cleanly split from UI.
 | `tartarust-ipc` | The frozen daemon↔client wire schema (serde / newline-delimited JSON) + shared domain types. |
 | `tartarust-daemon` | The background service: **sole device owner**. Runs the `evdev`→`uinput` remap engine and serves the IPC socket. |
 | `tartarust-cli` | `tartarust` — scriptable client + diagnostics. |
-| `tartarust-ui` | The Dioxus desktop app — a thin IPC client. |
+| `tartarust-ui` | The GPUI desktop app — a thin IPC client. |
 
 Exactly one process (the daemon) holds the device; the UI and CLI never touch it
 directly. The daemon exposes its state over a Unix socket at
@@ -48,7 +48,7 @@ directly. The daemon exposes its state over a Unix socket at
 ## Build
 
 ```sh
-cargo build --release        # all three binaries (the UI needs webkit2gtk-4.1 + gtk3)
+cargo build --release        # all three binaries
 cargo test --workspace       # unit + integration tests
 cargo install --path .       # installs tartarust-daemon, tartarust, tartarust-ui
 ```
@@ -56,8 +56,9 @@ cargo install --path .       # installs tartarust-daemon, tartarust, tartarust-u
 The bin targets live in the root `tartarust` package (thin shims over the member
 crates), so a single `cargo install` ships all three binaries.
 
-System deps (Arch): `webkit2gtk-4.1 gtk3` plus `cage` + `grim` for headless UI
-dev.
+System deps (Arch): `libxkbcommon fontconfig` (linked by the GPUI UI; usually
+already installed) and a Vulkan driver at runtime, plus `cage` + `grim` for
+headless UI dev.
 
 ## Install
 

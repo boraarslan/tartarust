@@ -1,9 +1,11 @@
 # CI: formatting, lints, tests. All three jobs run in parallel.
 #
-# The UI crate (dioxus desktop -> wry/tao) needs the GTK/WebKitGTK dev stack to
-# compile on Linux; fmt does not compile anything, so only clippy/test install
-# system packages. The daemon's uinput-gated integration tests detect that
-# /dev/uinput is not writable on hosted runners and skip themselves green.
+# The UI crate (gpui) needs xkbcommon + fontconfig/freetype dev packages to
+# compile on Linux (font-kit and xkbcommon link C libraries; the wayland/x11
+# and render stacks are pure Rust). fmt does not compile anything, so only
+# clippy/test install system packages. The daemon's uinput-gated integration
+# tests detect that /dev/uinput is not writable on hosted runners and skip
+# themselves green.
 name: CI
 
 on:
@@ -30,12 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install system deps (GTK / WebKitGTK for the Dioxus UI)
+      - name: Install system deps (xkbcommon / fontconfig for the GPUI UI)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev libssl-dev
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -47,12 +49,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install system deps (GTK / WebKitGTK for the Dioxus UI)
+      - name: Install system deps (xkbcommon / fontconfig for the GPUI UI)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev \
-            libayatana-appindicator3-dev librsvg2-dev libssl-dev
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace

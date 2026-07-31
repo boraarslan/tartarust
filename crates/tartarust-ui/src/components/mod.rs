@@ -1,11 +1,10 @@
-//! Reusable UI components.
+//! Shared UI components (GPUI).
 
 mod key_picker;
 mod keypad;
 mod shell;
-mod widgets;
+pub mod widgets;
 
-pub use key_picker::KeyPicker;
+pub use key_picker::{KeyPicker, KeyPickerEvent, key_picker_trigger};
 pub use keypad::{CapPhase, CapPointer, Keypad, KeypadMode};
 pub use shell::Shell;
-pub use widgets::{PageHead, Slider, Switch, Toggle};

@@ -27,7 +27,12 @@ toml = "0.8"
 # System tray (StatusNotifierItem over D-Bus). Runs on its own zbus/tokio tasks,
 # no GTK main loop — the right fit for a headless daemon. Default features pull
 # the `tokio` integration so it shares the daemon's runtime.
-ksni = "0.3"
+# async-io, NOT the default tokio: the root package builds the daemon and the
+# UI into one dependency graph, so ksni's default `zbus/tokio` feature would
+# unify into the UI's zbus too — which panics there ("no reactor running";
+# gpui/oo7 expect async-io zbus and the UI has no tokio runtime). ksni's async
+# API is identical under async-io; only zbus's internal executor changes.
+ksni = { version = "0.3", default-features = false, features = ["async-io"] }
 
 [dev-dependencies]
 toml = "0.8"

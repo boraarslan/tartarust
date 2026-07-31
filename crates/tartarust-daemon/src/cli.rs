@@ -393,6 +393,11 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
     if let Some((snapshot, update_tx)) = analog_ipc.take() {
         engine.set_analog_ipc(snapshot, update_tx);
     }
+    // The shutdown channel: SIGINT/SIGTERM, the tray's Quit item, AND
+    // `Request::Shutdown` over IPC all feed the same select, so every exit
+    // takes the NORMAL-restore + grab-release path. Created before the engine
+    // spawns so the engine loop can signal it.
+    let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let _engine_thread = pipeline::spawn_engine(
         engine,
         engine_rx,
@@ -400,6 +405,7 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
         device,
         config_path,
         DAEMON_VERSION,
+        quit_tx.clone(),
     );
 
     // Run the pre-bound IPC server + signal handling on the runtime built above.
@@ -413,11 +419,9 @@ fn run(config_path: Option<PathBuf>) -> Result<()> {
 
         // Optional system tray. Spawned AFTER the device is grabbed and the IPC
         // server is up. Its "Quit" item shuts the daemon down by sending on
-        // `quit_tx`, which feeds the SAME select as SIGINT/SIGTERM below — so the
-        // tray takes the existing NORMAL-restore + grab-release shutdown path,
-        // never a bare `process::exit`. Keep `_tray_handle` bound for the rest of
-        // the daemon's life: dropping it would tear the tray service down.
-        let (quit_tx, mut quit_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // `quit_tx` (shared with SIGINT/SIGTERM and IPC Shutdown above). Keep
+        // `_tray_handle` bound for the rest of the daemon's life: dropping it
+        // would tear the tray service down.
         let _tray_handle = if tray_enabled {
             tray::spawn(quit_tx).await
         } else {

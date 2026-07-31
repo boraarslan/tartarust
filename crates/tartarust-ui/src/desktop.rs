@@ -2,7 +2,7 @@
 //! install, and best-effort daemon autostart.
 //!
 //! Everything here is fire-and-forget infrastructure that runs on the main
-//! thread before the Dioxus launch. The invariant: **no failure in this module
+//! thread before the GPUI launch. The invariant: **no failure in this module
 //! may ever block or kill the UI** — a read-only home, a missing daemon
 //! binary, an unset `$HOME` all degrade to a `tracing` warning and the app's
 //! honest offline mode.
@@ -20,19 +20,17 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use dioxus::desktop::tao::window::Icon;
-
 /// Product id: `Icon=` name (and icon filename), state subdir (daemon.log).
 const APP_ID: &str = "tartarust";
 
-/// The window class the running app actually gets — the **binary name**, not
-/// the window title. dioxus-desktop/tao pass no app id to GTK, so the Wayland
-/// `app_id` / X11 `WM_CLASS` falls back to `g_get_prgname()` = argv[0]'s
-/// basename. Desktop environments associate a window with its `.desktop` file
-/// by `app_id == entry basename` (and `StartupWMClass`), so both MUST be this
+/// The window class the running app gets: GPUI sets it explicitly as the
+/// Wayland `app_id` / X11 `WM_CLASS` (`WindowOptions.app_id` in `lib.rs`).
+/// Desktop environments associate a window with its `.desktop` file by
+/// `app_id == entry basename` (and `StartupWMClass`), so both MUST be this
 /// exact string or the installed entry never matches the running window
-/// (generic gear icon, broken dock grouping/pinning).
-const WM_CLASS: &str = "tartarust-ui";
+/// (generic gear icon, broken dock grouping/pinning). Kept as the binary name
+/// for continuity with previously installed entries.
+pub const WM_CLASS: &str = "tartarust-ui";
 
 /// The daemon's binary name, for sibling/`PATH` resolution. Kept as a local
 /// constant on purpose: the UI must not depend on daemon code (see
@@ -40,13 +38,9 @@ const WM_CLASS: &str = "tartarust-ui";
 const DAEMON_BIN_NAME: &str = "tartarust-daemon";
 
 /// The scalable icon, embedded so the installed binary is self-contained.
+/// GPUI has no per-window icon API, so on BOTH X11 and Wayland the taskbar
+/// icon resolves from this installed desktop entry + icon (matched by app_id).
 const ICON_SVG: &str = include_str!("../assets/tartarust.svg");
-
-/// 128px RGBA8 raster of [`ICON_SVG`], embedded for the window icon (X11
-/// taskbar/alt-tab; Wayland ignores it and matches the desktop entry by
-/// app_id instead). Regenerate after editing the SVG:
-/// `rsvg-convert -w 128 -h 128 assets/tartarust.svg -o assets/tartarust-128.png`
-const ICON_PNG: &[u8] = include_bytes!("../assets/tartarust-128.png");
 
 const NO_DESKTOP_INSTALL_ENV: &str = "TARTARUST_UI_NO_DESKTOP_INSTALL";
 const NO_AUTOSTART_ENV: &str = "TARTARUST_UI_NO_AUTOSTART";
@@ -54,46 +48,6 @@ const NO_AUTOSTART_ENV: &str = "TARTARUST_UI_NO_AUTOSTART";
 /// `true` when the gate variable is set to exactly `1` (the documented form).
 fn gated(var: &str) -> bool {
     std::env::var_os(var).is_some_and(|v| v == "1")
-}
-
-// ---------------------------------------------------------------------------
-// Window icon
-// ---------------------------------------------------------------------------
-
-/// Decode [`ICON_PNG`] into a tao window icon. `None` on any decode surprise
-/// (with a warning) — same never-fatal contract as the rest of this module;
-/// the window then just keeps the toolkit default.
-pub fn window_icon() -> Option<Icon> {
-    match decode_window_icon() {
-        Ok(icon) => Some(icon),
-        Err(err) => {
-            tracing::warn!(%err, "embedded window icon unusable; keeping default");
-            None
-        }
-    }
-}
-
-/// Fallible core of [`window_icon`]. The color-type check is load-bearing:
-/// `Icon::from_rgba` trusts the caller on pixel format, so a regenerated
-/// asset that came out grayscale/indexed would silently render garbage.
-fn decode_window_icon() -> Result<Icon, Box<dyn std::error::Error>> {
-    let mut reader = png::Decoder::new(io::Cursor::new(ICON_PNG)).read_info()?;
-    let mut buf = vec![
-        0u8;
-        reader
-            .output_buffer_size()
-            .ok_or("icon dimensions overflow")?
-    ];
-    let info = reader.next_frame(&mut buf)?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return Err(format!(
-            "expected RGBA8 icon, got {:?}/{:?}",
-            info.color_type, info.bit_depth
-        )
-        .into());
-    }
-    buf.truncate(info.buffer_size());
-    Ok(Icon::from_rgba(buf, info.width, info.height)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +365,7 @@ fn daemon_reachable() -> bool {
     std::os::unix::net::UnixStream::connect(tartarust_ipc::socket_path()).is_ok()
 }
 
-fn spawn_daemon_detached() {
+pub fn spawn_daemon_detached() {
     let bin = resolve_daemon_bin(std::env::current_exe().ok().as_deref(), |p| p.is_file());
 
     let mut cmd = Command::new(&bin);
@@ -536,13 +490,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
-    }
-
-    /// Guards the committed raster: a regenerated `tartarust-128.png` that is
-    /// not RGBA8 (or corrupt) must fail here, not silently at window creation.
-    #[test]
-    fn embedded_window_icon_decodes() {
-        decode_window_icon().unwrap();
     }
 
     #[test]
