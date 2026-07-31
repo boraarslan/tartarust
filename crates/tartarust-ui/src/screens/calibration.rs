@@ -29,8 +29,12 @@
 //! analog key), so dragging never fights the refresh.
 //!
 //! **Travel readouts.** Every actuation slider's readout is an EDITABLE field in
-//! millimetres — type a depth, press Enter (or leave the field) and it applies.
-//! The device speaks a raw 0..255 byte and no byte-exact byte→mm table is public
+//! millimetres, captioned with the depth range it accepts. A valid depth applies
+//! AS YOU TYPE — the field behaves like the slider beside it, not like a form —
+//! while text that is not yet a usable depth ("1.", "-", or a figure outside the
+//! range) applies nothing and is left alone under the caret. Enter and blur
+//! commit, which is where such text is normalized back to what the threshold
+//! actually holds. The device speaks a raw 0..255 byte and no byte-exact byte→mm table is public
 //! (`docs/research/03-analog-actuation.md`: "mm → byte value mapping unknown"),
 //! so the byte is mapped LINEARLY over the switches' 4.0 mm optical travel — a
 //! documented approximation, not a calibration. The BYTE stays the authority:
@@ -77,6 +81,15 @@ use crate::theme;
 /// How often to re-poll the live analog state while this view is alive.
 const POLL_INTERVAL_MS: u64 = 100;
 
+/// How long the single-key editor must have been quiet before a daemon config
+/// that disagrees with it is treated as an EXTERNAL change and re-seeded.
+///
+/// The poll trails our own pushes by up to one interval, so right after a drag
+/// or a keystroke the polled config legitimately disagrees with the editor
+/// without anything external having happened. Comfortably longer than
+/// [`POLL_INTERVAL_MS`], so that lag alone can never trip the re-seed.
+const EXTERNAL_RESEED_GRACE: Duration = Duration::from_millis(400);
+
 /// The floating single-key editor's width. The old stylesheet said 240px; the
 /// ported [`KeyPicker`] panel is a fixed 280px and now renders INSIDE this
 /// editor (it no longer carries its own popover), so the editor takes that width
@@ -111,7 +124,7 @@ const TRAVEL_MM: f32 = 4.0;
 /// Which threshold an editable travel field commits to. One subscription body
 /// serves all five: the field parses to a byte and hands it to the same setter
 /// its slider's `SliderEvent::Change` calls.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Field {
     Actuation,
     Release,
@@ -133,6 +146,11 @@ struct KeyEdit {
     second_on: bool,
     second_point: u8,
     second_action: String,
+    /// When this edit last pushed to the daemon. Stamped by
+    /// [`Calibration::push_key_edit`] and read only by the external-change
+    /// re-seed, which needs to tell the poll's lag behind OUR pushes from a
+    /// config someone else changed. See [`EXTERNAL_RESEED_GRACE`].
+    last_push: std::time::Instant,
 }
 
 impl KeyEdit {
@@ -147,7 +165,35 @@ impl KeyEdit {
                 .second_action
                 .clone()
                 .unwrap_or_else(|| SEED_SECOND_ACTION.to_string()),
+            last_push: std::time::Instant::now(),
         }
+    }
+
+    /// Whether re-seeding from `cfg` would actually change this edit — i.e. the
+    /// daemon's copy of the key no longer says what the editor shows.
+    ///
+    /// Phrased as "would a re-seed move anything", NOT as a field-by-field
+    /// comparison against the config, and that distinction is load-bearing: this
+    /// decides a re-seed that runs from `render`, so every difference it reports
+    /// must be settled by one re-seed. A config that [`KeyEdit::seed`] cannot
+    /// round-trip would otherwise report the same difference on every frame and
+    /// spin the render loop. Hence the second step compares as the pair it is
+    /// seeded from — its point and action only count while the config HAS one,
+    /// and an absent action leaves the seeded default alone.
+    fn differs_from(&self, cfg: &AnalogKeyConfig) -> bool {
+        let second_on = cfg.second_actuation_point.is_some();
+        if second_on != self.second_on
+            || cfg.actuation_point != self.actuation
+            || cfg.release_point != self.release
+        {
+            return true;
+        }
+        second_on
+            && (cfg.second_actuation_point != Some(self.second_point)
+                || cfg
+                    .second_action
+                    .as_ref()
+                    .is_some_and(|a| *a != self.second_action))
     }
 }
 
@@ -186,6 +232,11 @@ pub struct Calibration {
     rel_input: Entity<InputState>,
     second_slider: Entity<SliderState>,
     second_input: Entity<InputState>,
+    /// The field being typed in right now, for the duration of ONE live apply.
+    /// [`Calibration::sync_inputs`] leaves this field's text alone — see
+    /// [`Calibration::live_field`] for why rewriting it mid-keystroke is a caret
+    /// fight — and still writes the other four.
+    live_edit: Option<Field>,
 
     /// Bulk (Edit Mode) values. Seeded from the first selected key when Edit
     /// Mode opens; reshaping the selection keeps them — they are what you are
@@ -282,10 +333,11 @@ impl Calibration {
         )
         .detach();
 
-        // Enter and blur both commit, the same contract the Customize screen's
-        // Launch field carries. `Change` is deliberately NOT a commit: pushing
-        // per keystroke would fire a `SetActuation` for every intermediate
-        // number you type through.
+        // Three events, two jobs. `Change` (every keystroke, and every
+        // programmatic write) APPLIES what is typed when it is already a valid
+        // depth, so the field tracks the device like its slider does; Enter and
+        // blur COMMIT, which additionally normalizes the text — the same
+        // contract the Customize screen's Launch field carries.
         for (input, field) in [
             (&act_input, Field::Actuation),
             (&rel_input, Field::Release),
@@ -296,10 +348,12 @@ impl Calibration {
             cx.subscribe_in(
                 input,
                 window,
-                move |this: &mut Self, _, ev: &InputEvent, window, cx| {
-                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                        this.commit_field(field, window, cx);
+                move |this: &mut Self, _, ev: &InputEvent, window, cx| match ev {
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        this.commit_field(field, window, cx)
                     }
+                    InputEvent::Change => this.live_field(field, window, cx),
+                    _ => {}
                 },
             )
             .detach();
@@ -366,6 +420,7 @@ impl Calibration {
             rel_input,
             second_slider,
             second_input,
+            live_edit: None,
             bulk_act: DEFAULT_ACTUATION_POINT,
             bulk_rel: DEFAULT_RELEASE_POINT,
             bulk_act_slider,
@@ -678,6 +733,28 @@ impl Calibration {
         }
     }
 
+    /// That range as the field's caption states it. Built from the SAME
+    /// [`Calibration::range_of`] the validation reads and re-taken every render,
+    /// so a ceiling that moves — the actuation row gives up its last byte to a
+    /// dual-step — moves the caption with it. A hint that quietly disagreed with
+    /// the clamp would be worse than no hint.
+    fn range_hint(&self, field: Field) -> SharedString {
+        let (lo, hi) = self.range_of(field);
+        format!("{:.2}–{:.2} mm", byte_to_mm(lo), byte_to_mm(hi)).into()
+    }
+
+    /// The byte a field stands for right now, when it stands for one (the
+    /// single-key fields have no value while no analog key is selected).
+    fn value_of(&self, field: Field) -> Option<u8> {
+        match field {
+            Field::Actuation => self.edit.as_ref().map(|e| e.actuation),
+            Field::Release => self.edit.as_ref().map(|e| e.release),
+            Field::Second => self.edit.as_ref().map(|e| e.second_point),
+            Field::BulkActuation => Some(self.bulk_act),
+            Field::BulkRelease => Some(self.bulk_rel),
+        }
+    }
+
     /// Commit one editable travel field (Enter or blur). Text that is not a
     /// number — including an empty field — changes nothing and the current value
     /// is put back, so a half-typed figure can never push a threshold. A parsed
@@ -701,30 +778,97 @@ impl Calibration {
         }
     }
 
+    /// Apply a typed depth ON EVERY KEYSTROKE, so a field tracks the device the
+    /// way its slider does instead of holding the change until you press Enter.
+    /// Only a depth that is already valid applies; anything else — a half-typed
+    /// "1.", a lone "-", an empty field, a figure past the end of the range —
+    /// applies nothing AND is left alone. Putting the old text back here (which
+    /// is what [`Calibration::commit_field`] does) would make the field
+    /// impossible to type in; normalizing is the commit's job.
+    ///
+    /// The range check runs in MM SPACE, against the field's byte range
+    /// converted back to depths, and it must: [`mm_to_byte`] saturates, so
+    /// checking the converted byte instead would read "40" — ten times the whole
+    /// stroke — as a perfectly in-range 255 and bottom the threshold out under a
+    /// user who is still typing.
+    fn live_field(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.input_of(field).read(cx).value();
+        let Ok(mm) = typed.trim().parse::<f32>() else {
+            return;
+        };
+        let (lo, hi) = self.range_of(field);
+        if !(byte_to_mm(lo)..=byte_to_mm(hi)).contains(&mm) {
+            return;
+        }
+        let value = mm_to_byte(mm);
+        // `Change` also fires for the writes `sync_inputs` itself makes, so this
+        // arrives on a re-seed and after every setter — not just on a keystroke.
+        // Applying a byte the threshold already holds would turn selecting a key
+        // into a `SetActuation` push, and a dependent clamp into a second,
+        // redundant one. Nothing changed, so nothing is sent.
+        if self.value_of(field) == Some(value) {
+            return;
+        }
+        // The setters end in `sync_inputs`, which would rewrite this field with
+        // the canonical 2-decimal text — a typed "2.3" becoming "2.31" under the
+        // caret, which `set_value` then throws to the end of the line. Claim the
+        // field for the length of the dispatch: `sync_inputs` skips it and still
+        // writes the other four, so a clamp that drags release along with
+        // actuation is visible while you type.
+        self.live_edit = Some(field);
+        match field {
+            Field::Actuation => self.set_actuation(value, window, cx),
+            Field::Release => self.set_release(value, window, cx),
+            Field::Second => self.set_second_point(value, window, cx),
+            Field::BulkActuation => self.set_bulk_actuation(value, window, cx),
+            Field::BulkRelease => self.set_bulk_release(value, window, cx),
+        }
+        self.live_edit = None;
+    }
+
     /// Write the current bytes back into the travel fields, so a drag, a
     /// re-seed, or a dependent clamp shows up in the numbers the moment it
     /// lands. Every setter ends here.
     ///
     /// The text is written only when it actually differs: `set_value` moves the
     /// caret to the end and emits `Change`, so a no-op rewrite would fight the
-    /// field while you type in it. The commit rides `PressEnter`/`Blur` alone,
-    /// so that emitted `Change` cannot loop back into a push either way.
+    /// field while you type in it. That emitted `Change` reaches
+    /// [`Calibration::live_field`], which applies nothing when the value has not
+    /// moved — so a sync can never loop back into a push.
+    ///
+    /// The field named by `live_edit` is skipped entirely: it is the one being
+    /// typed in, and it already says what the user meant. Every OTHER field
+    /// still syncs, so a dependent clamp shows up live.
     fn sync_inputs(&self, window: &mut Window, cx: &mut App) {
         if let Some(e) = self.edit.as_ref() {
-            set_travel(&self.act_input, e.actuation, window, cx);
-            set_travel(&self.rel_input, e.release, window, cx);
-            set_travel(&self.second_input, e.second_point, window, cx);
+            if self.live_edit != Some(Field::Actuation) {
+                set_travel(&self.act_input, e.actuation, window, cx);
+            }
+            if self.live_edit != Some(Field::Release) {
+                set_travel(&self.rel_input, e.release, window, cx);
+            }
+            if self.live_edit != Some(Field::Second) {
+                set_travel(&self.second_input, e.second_point, window, cx);
+            }
         }
-        set_travel(&self.bulk_act_input, self.bulk_act, window, cx);
-        set_travel(&self.bulk_rel_input, self.bulk_rel, window, cx);
+        if self.live_edit != Some(Field::BulkActuation) {
+            set_travel(&self.bulk_act_input, self.bulk_act, window, cx);
+        }
+        if self.live_edit != Some(Field::BulkRelease) {
+            set_travel(&self.bulk_rel_input, self.bulk_rel, window, cx);
+        }
     }
 
     /// Send the current edit state to the daemon, upholding the schema
     /// invariants. Dual-step off => BOTH second fields cleared (never a half-set
     /// second step). The second action comes from the picker, so it is already a
     /// valid evdev name — no text coercion needed.
-    fn push_key_edit(&self, cx: &mut App) {
-        let Some(e) = self.edit.as_ref() else { return };
+    fn push_key_edit(&mut self, cx: &mut App) {
+        let Some(e) = self.edit.as_mut() else { return };
+        // Stamp the push. The poll answers up to `POLL_INTERVAL_MS` later, so
+        // for that long the config it reports is a picture from BEFORE this
+        // push; the external-change re-seed reads this stamp to know that.
+        e.last_push = std::time::Instant::now();
         // With a dual-step the primary caps at 254: the second point must be
         // STRICTLY deeper, and `saturating_add(1)` at 255 would otherwise send
         // second == actuation, violating the SetActuation contract. (The slider
@@ -742,9 +886,12 @@ impl Calibration {
         } else {
             (None, None)
         };
+        // Read the index out before `self.store`: `e` still holds a mutable
+        // borrow of `self.edit` until its last use.
+        let index = e.index;
         store::fire(
             &self.store,
-            ipc::req_set_actuation(e.index, act, rel, sap, sact),
+            ipc::req_set_actuation(index, act, rel, sap, sact),
             cx,
         );
     }
@@ -1050,6 +1197,7 @@ impl Calibration {
             .child(divider())
             .child(labeled_slider_input(
                 "Actuation point",
+                self.range_hint(Field::Actuation),
                 &self.act_slider,
                 &self.act_input,
                 "mm",
@@ -1058,6 +1206,7 @@ impl Calibration {
             ))
             .child(labeled_slider_input(
                 "Release point",
+                self.range_hint(Field::Release),
                 &self.rel_slider,
                 &self.rel_input,
                 "mm",
@@ -1074,6 +1223,7 @@ impl Calibration {
             .when(e.second_on, |el| {
                 el.child(labeled_slider_input(
                     "Second actuation point",
+                    self.range_hint(Field::Second),
                     &self.second_slider,
                     &self.second_input,
                     "mm",
@@ -1229,6 +1379,7 @@ impl Calibration {
                 .child(divider())
                 .child(labeled_slider_input(
                     "Actuation point",
+                    self.range_hint(Field::BulkActuation),
                     &self.bulk_act_slider,
                     &self.bulk_act_input,
                     "mm",
@@ -1237,6 +1388,7 @@ impl Calibration {
                 ))
                 .child(labeled_slider_input(
                     "Release point",
+                    self.range_hint(Field::BulkRelease),
                     &self.bulk_rel_slider,
                     &self.bulk_rel_input,
                     "mm",
@@ -1267,12 +1419,43 @@ impl Render for Calibration {
             selected.and_then(|k| self.cfg_for(k).map(|c| (k, c)))
         };
 
-        // Re-seed the sliders when the editor's target key changes (the old
-        // component remounted; here the view outlives the selection). Runs
-        // before the values are read below, so the re-seed shows this frame.
+        // Re-seed the sliders on either thing that invalidates them: the
+        // editor's target key changing (the old component remounted; here the
+        // view outlives the selection), or the daemon changing the key we are
+        // already on. Runs before the values are read below, so a re-seed shows
+        // this frame.
         match &editing {
             Some((_, cfg)) if self.edit.as_ref().map(|e| e.index) != Some(cfg.index) => {
                 self.seed_key_edit(cfg, window, cx);
+            }
+            // Same key, but the daemon's copy of it no longer says what the
+            // editor shows: something changed the config from outside — a
+            // Discard restoring the saved actuation, most visibly. The editor is
+            // otherwise seeded ONLY when the selection moves to another key, so
+            // without this arm it keeps displaying the pre-discard values until
+            // you click away and back.
+            Some((_, cfg)) if self.edit.as_ref().is_some_and(|e| e.differs_from(cfg)) => {
+                // Telling "someone else changed it" from "we changed it and the
+                // poll has not caught up" is purely a matter of timing, so the
+                // last push is what decides. Every push re-stamps it, which is
+                // what keeps a drag or a typing run — where the two disagree
+                // constantly — from being yanked out from under the user.
+                if self
+                    .edit
+                    .as_ref()
+                    .is_some_and(|e| e.last_push.elapsed() > EXTERNAL_RESEED_GRACE)
+                {
+                    self.seed_key_edit(cfg, window, cx);
+                } else {
+                    // Too soon to tell the two apart — but nothing else promises
+                    // another frame in which to decide again. The poll notifies
+                    // only when the analog state CHANGES, and on an idle keypad
+                    // the change that got us here was the last one it will
+                    // report. Ask for the frame ourselves, or an external edit
+                    // that lands mid-grace would sit unseen until the next
+                    // keypress.
+                    nudge_next_frame(cx);
+                }
             }
             None if self.edit.is_some() => {
                 self.edit = None;
@@ -1740,6 +1923,77 @@ mod tests {
         for b in 0..=255u8 {
             assert_eq!(mm_to_byte(byte_to_mm(b)), b, "byte {b}");
         }
+    }
+
+    /// A daemon-reported config to seed an edit from. The dual-step is the
+    /// interesting axis, so it is what the arguments carry.
+    fn cfg(second: Option<u8>, action: Option<&str>) -> AnalogKeyConfig {
+        AnalogKeyConfig {
+            index: 3,
+            key: "KEY_Q".to_string(),
+            actuation_point: DEFAULT_ACTUATION_POINT,
+            release_point: DEFAULT_RELEASE_POINT,
+            second_actuation_point: second,
+            second_action: action.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_seeded_edit_never_differs_from_the_config_that_seeded_it() {
+        // `differs_from` gates a re-seed that runs from `render`, so every
+        // difference it reports MUST be settled by one re-seed — a difference
+        // that survives seeding would spin the frame loop. That has to hold for
+        // configs the seed cannot round-trip, too: a second action with no
+        // second point, and the reverse.
+        for c in [
+            cfg(None, None),
+            cfg(Some(0xD0), Some("KEY_LEFTSHIFT")),
+            cfg(None, Some("KEY_LEFTSHIFT")),
+            cfg(Some(0xD0), None),
+        ] {
+            assert!(!KeyEdit::seed(&c).differs_from(&c), "{c:?}");
+        }
+    }
+
+    #[test]
+    fn an_external_change_to_the_key_is_seen() {
+        // What a daemon-side Discard looks like from the editor: the same key,
+        // different values.
+        let base = cfg(None, None);
+        let edit = KeyEdit::seed(&base);
+        let mut moved = base.clone();
+        moved.actuation_point = 0x40;
+        assert!(edit.differs_from(&moved));
+        let mut moved = base.clone();
+        moved.release_point = 0x20;
+        assert!(edit.differs_from(&moved));
+        // A dual-step appearing...
+        let dual = cfg(Some(0xD0), Some("KEY_LEFTSHIFT"));
+        assert!(edit.differs_from(&dual));
+        // ...its point moving, its action changing, and it going away again.
+        let dual_edit = KeyEdit::seed(&dual);
+        assert!(dual_edit.differs_from(&cfg(Some(0xE0), Some("KEY_LEFTSHIFT"))));
+        assert!(dual_edit.differs_from(&cfg(Some(0xD0), Some("KEY_LEFTALT"))));
+        assert!(dual_edit.differs_from(&base));
+    }
+
+    #[test]
+    fn a_live_typed_depth_is_range_checked_in_mm_not_on_its_byte() {
+        // `live_field` checks the typed DEPTH against the field's range in mm.
+        // Checking the converted byte instead would wave through anything past
+        // the end of the stroke, because `mm_to_byte` saturates there — here is
+        // that difference, on the actuation row's 1..=255.
+        let (lo, hi) = (1u8, 255u8);
+        let typed = 40.0; // ten times the whole travel
+        assert!(!(byte_to_mm(lo)..=byte_to_mm(hi)).contains(&typed));
+        assert!(
+            (lo..=hi).contains(&mm_to_byte(typed)),
+            "a byte-domain check would have accepted it"
+        );
+        // In range, the two agree — a valid depth converts inside the range.
+        let typed = byte_to_mm(200);
+        assert!((byte_to_mm(lo)..=byte_to_mm(hi)).contains(&typed));
+        assert_eq!(mm_to_byte(typed), 200);
     }
 
     #[test]

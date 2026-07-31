@@ -106,7 +106,9 @@ pub fn spawn_reader(
 /// mutating IPC requests. Applies the startup profile's lighting once on entry.
 ///
 /// `daemon_version` is threaded through to `GetStatus` replies. `config_path` is
-/// where mutating IPC requests are persisted (atomic write).
+/// where mutating IPC requests are persisted (atomic write). `quit_tx` feeds the
+/// daemon's shutdown select — `Request::Shutdown` acks, then signals it, taking
+/// the same NORMAL-restore + grab-release exit path as the tray and SIGTERM.
 pub fn spawn_engine(
     mut engine: Engine,
     rx: std::sync::mpsc::Receiver<EngineMsg>,
@@ -114,6 +116,7 @@ pub fn spawn_engine(
     device: DeviceHandle,
     config_path: PathBuf,
     daemon_version: &'static str,
+    quit_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) -> JoinHandle<()> {
     thread::Builder::new()
         .name("tartarust-engine".into())
@@ -152,6 +155,7 @@ pub fn spawn_engine(
                         // engine derives it by diffing the live config against
                         // its last-saved snapshot.
                         let is_save = matches!(request, tartarust_ipc::Request::SaveProfile { .. });
+                        let is_shutdown = matches!(request, tartarust_ipc::Request::Shutdown);
                         let (response, cmds) = engine.apply(request, daemon_version);
                         for cmd in cmds {
                             device.send(cmd);
@@ -176,6 +180,12 @@ pub fn spawn_engine(
                             let _ = reply.send(reply_msg);
                         } else {
                             let _ = reply.send(response);
+                        }
+                        // Reply FIRST, then signal: the client learns the
+                        // shutdown landed before the socket goes away.
+                        if is_shutdown {
+                            tracing::info!("shutdown requested over IPC");
+                            let _ = quit_tx.send(());
                         }
                     }
                     EngineMsg::DeviceInfo(info) => engine.set_device_info(info),

@@ -365,7 +365,7 @@ fn daemon_reachable() -> bool {
     std::os::unix::net::UnixStream::connect(tartarust_ipc::socket_path()).is_ok()
 }
 
-fn spawn_daemon_detached() {
+pub fn spawn_daemon_detached() {
     let bin = resolve_daemon_bin(std::env::current_exe().ok().as_deref(), |p| p.is_file());
 
     let mut cmd = Command::new(&bin);

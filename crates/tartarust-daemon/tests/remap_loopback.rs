@@ -284,6 +284,7 @@ fn synthetic_loopback_remaps_keys_hypershift_and_macros() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
 
     // Give the threads a moment to reach their read loops.
@@ -406,6 +407,7 @@ fn revoke_mid_hold_releases_held_keys() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
 
     std::thread::sleep(Duration::from_millis(150));
@@ -550,6 +552,7 @@ fn nkro_eight_simultaneous_keys_pass_through() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
 
     std::thread::sleep(Duration::from_millis(150));
@@ -664,6 +667,7 @@ fn drop_set_filters_claimed_key_but_passes_unclaimed() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
 
     std::thread::sleep(Duration::from_millis(150));
@@ -814,6 +818,7 @@ fn thumb_alt_base_remap_in_four_way_mode() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
     std::thread::sleep(Duration::from_millis(150));
 
@@ -912,6 +917,7 @@ fn two_source_nodes_feed_one_engine() {
         device,
         std::env::temp_dir().join("tartarust-loopback-nonexistent.toml"),
         DAEMON_VERSION,
+        tokio::sync::mpsc::unbounded_channel::<()>().0,
     );
     std::thread::sleep(Duration::from_millis(150));
 

@@ -137,6 +137,11 @@ pub enum Request {
         /// Advisory only — persistence is whole-file.
         name: Option<String>,
     },
+    /// Ask the daemon to exit gracefully (release the device grab, close the
+    /// socket). The daemon replies `Ack` FIRST, then shuts down — the caller
+    /// owns any respawn (the UI's Restart flow spawns a fresh daemon after
+    /// this). No state is persisted or discarded by this request.
+    Shutdown,
     /// Discard all pending session changes: the inverse of
     /// [`Request::SaveProfile`]. Restores the daemon's live config from its
     /// last-saved snapshot (binds, lighting, profiles, macros, actuation,
@@ -462,6 +467,7 @@ mod tests {
                 | Request::SetProfileLinkedApp { .. }
                 | Request::SetDefaultProfile { .. }
                 | Request::SaveProfile { .. }
+                | Request::Shutdown
                 | Request::DiscardChanges
                 | Request::SetThumbAxisMode { .. }
                 | Request::ExportProfile { .. }
@@ -504,6 +510,7 @@ mod tests {
             Request::SaveProfile {
                 name: Some("fps".into()),
             },
+            Request::Shutdown,
             Request::DiscardChanges,
             Request::SetThumbAxisMode {
                 profile: "fps".into(),

@@ -59,6 +59,8 @@ pub struct Shell {
     last_masthead_down: Option<Instant>,
     /// Profile dropdown open state (masthead picker).
     picker_open: bool,
+    /// Daemon-status popover open state (statusbar DAEMON LIVE/OFFLINE item).
+    daemon_menu_open: bool,
     /// Dev-only gallery view, created only under `TARTARUST_SCREEN=gallery`.
     gallery: Option<Entity<Gallery>>,
     /// Screen views, created lazily on first visit (each holds its own input/
@@ -101,6 +103,7 @@ impl Shell {
             screen,
             last_masthead_down: None,
             picker_open: false,
+            daemon_menu_open: false,
             gallery,
             profiles_screen: None,
             lighting_screen: None,
@@ -206,7 +209,7 @@ impl Render for Shell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Snapshot what the chrome needs, then drop the borrow before building
         // listeners.
-        let (offline, device_connected, unsaved, active_idx, profile_names) = {
+        let (offline, device_connected, unsaved, active_idx, profile_names, daemon_version) = {
             let s = self.store.read(cx);
             (
                 s.offline,
@@ -217,6 +220,7 @@ impl Render for Shell {
                     .iter()
                     .map(|p| p.name.clone())
                     .collect::<Vec<_>>(),
+                s.status.as_ref().map(|st| st.daemon_version.clone()),
             )
         };
         let active_profile = profile_names.get(active_idx).cloned();
@@ -502,10 +506,20 @@ impl Render for Shell {
             .text_size(theme::sp(10.))
             .text_color(theme::dim())
             .child(
+                // Also a BUTTON: opens the daemon popover (version + restart).
                 div()
+                    .id("daemon-status")
                     .flex()
                     .items_center()
                     .gap(theme::sp(6.))
+                    .px(theme::sp(5.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
+                    .hover(|s| s.bg(theme::panel_1()).text_color(theme::ink()))
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.daemon_menu_open = !this.daemon_menu_open;
+                        cx.notify();
+                    }))
                     .child(if offline {
                         led_off()
                     } else {
@@ -554,6 +568,14 @@ impl Render for Shell {
             .font_family(theme::sans(cx))
             .text_size(theme::sp(13.))
             .text_color(theme::ink())
+            // Click-away blur, in the CAPTURE phase: the root blurs whatever
+            // holds focus BEFORE the click reaches its target — a click on an
+            // input then re-focuses it in bubble (net: still focused), while a
+            // click anywhere else leaves focus cleared. Bubble-phase blur
+            // would run AFTER an input's focus click and undo it.
+            .capture_any_mouse_down(cx.listener(|_, _, window, _| {
+                window.blur();
+            }))
             // Ctrl+scroll zooms the UI scale (finer steps than the statusbar
             // stepper). Plain scrolling passes through to the lists untouched.
             .on_scroll_wheel(cx.listener(|_, ev: &gpui::ScrollWheelEvent, _, cx| {
@@ -638,6 +660,78 @@ impl Render for Shell {
                                 }))
                                 .child(name.clone())
                         })),
+                )
+            })
+            // Daemon popover: version readout + restart, anchored above the
+            // statusbar's DAEMON item. Same dismiss chassis as the picker —
+            // overlay closes on down, the panel stops propagation.
+            .when(self.daemon_menu_open, |el| {
+                let version_line = match (&daemon_version, offline) {
+                    (_, true) => "daemon not running".to_string(),
+                    (Some(v), false) => format!("tartarust-daemon v{v}"),
+                    (None, false) => "tartarust-daemon (version unknown)".to_string(),
+                };
+                el.child(
+                    div()
+                        .id("daemon-menu-dismiss")
+                        .absolute()
+                        .inset_0()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.daemon_menu_open = false;
+                                cx.notify();
+                            }),
+                        ),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(theme::sp(34.))
+                        .left(theme::sp(10.))
+                        .w(theme::sp(240.))
+                        .flex()
+                        .flex_col()
+                        .gap(theme::sp(8.))
+                        .p(theme::sp(10.))
+                        .rounded(theme::sp(theme::RADIUS))
+                        .bg(theme::panel_1())
+                        .border_1()
+                        .border_color(theme::line())
+                        .shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(
+                            div()
+                                .font_family(mono.clone())
+                                .text_size(theme::sp(11.))
+                                .text_color(if offline { theme::dim() } else { theme::ink() })
+                                .child(version_line),
+                        )
+                        .child(
+                            div()
+                                .id("daemon-restart")
+                                .px(theme::sp(10.))
+                                .py(theme::sp(5.))
+                                .rounded(theme::sp(theme::RADIUS_SM))
+                                .border_1()
+                                .border_color(theme::line())
+                                .text_size(theme::sp(12.))
+                                .text_color(theme::dim())
+                                .flex()
+                                .justify_center()
+                                .hover(|s| s.text_color(theme::ink()).border_color(theme::mute()))
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.daemon_menu_open = false;
+                                    store::restart_daemon(&this.store, cx);
+                                    cx.notify();
+                                }))
+                                .child(if offline {
+                                    "Start daemon"
+                                } else {
+                                    "Restart daemon"
+                                }),
+                        ),
                 )
             })
     }

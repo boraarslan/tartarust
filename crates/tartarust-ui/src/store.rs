@@ -359,6 +359,44 @@ pub fn switch_profile_and_reload(store: &Entity<AppState>, name: String, cx: &mu
     .detach();
 }
 
+/// Restart the daemon (the statusbar affordance): ask it to exit gracefully
+/// (it acks FIRST, then takes the normal grab-release shutdown path), give
+/// the socket a moment to close, spawn a fresh daemon detached, and retry the
+/// load until it answers. Doubling as the OFFLINE recovery path: with no
+/// daemon the shutdown send just fails and the spawn proceeds.
+pub fn restart_daemon(store: &Entity<AppState>, cx: &mut App) {
+    const SPAWN_RETRIES: u32 = 12;
+    const RETRY_DELAY: Duration = Duration::from_millis(500);
+
+    let store = store.clone();
+    cx.spawn(async move |cx| {
+        let _ = cx
+            .background_executor()
+            .spawn(async move { ipc::send(&Request::Shutdown) })
+            .await;
+        // Honest offline while the daemon is down; the load below recovers.
+        let _ = store.update(cx, |s, cx| {
+            if !s.offline {
+                s.offline = true;
+                cx.notify();
+            }
+        });
+        cx.background_executor()
+            .timer(Duration::from_millis(400))
+            .await;
+        cx.background_executor()
+            .spawn(async { desktop::spawn_daemon_detached() })
+            .await;
+        for _ in 0..SPAWN_RETRIES {
+            cx.background_executor().timer(RETRY_DELAY).await;
+            if try_load(&store, cx).await {
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
 /// Discard all pending session changes (the Discard affordance, the inverse
 /// of [`save_profile`]). The daemon restores its live config from the
 /// last-saved snapshot and re-activates; on `Ack` the UI resyncs wholesale —

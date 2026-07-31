@@ -569,6 +569,10 @@ impl Engine {
             // an Error if the write fails (so the client learns the outcome — see
             // `pipeline::spawn_engine`).
             Request::SaveProfile { .. } => (Response::Ack, vec![]),
+            // Shutdown is acked here; the daemon loop performs the actual exit
+            // AFTER the reply is sent (see `pipeline::spawn_engine`) so the
+            // client learns the request landed before the socket goes away.
+            Request::Shutdown => (Response::Ack, vec![]),
             Request::DiscardChanges => self.discard_changes(),
             Request::SetThumbAxisMode { profile, mode } => self.set_thumb_axis_mode(profile, mode),
             Request::ExportProfile { name } => self.export_profile(name),

@@ -103,6 +103,12 @@ const FIELD_W: f32 = 64.0;
 /// caller owns the `InputState` and decides when a typed value commits (Enter,
 /// blur) — this only lays the row out.
 ///
+/// `hint` rides the right end of the label row and states what the field will
+/// accept. The caller owns the clamps, so it owns the wording too — and a hint
+/// that moves with the control (a ceiling that depends on another setting) stays
+/// correct because it is passed per render, not baked in here. An empty hint
+/// leaves the label row as it was.
+///
 /// The amber variant tints the field's border and the suffix rather than the
 /// field's text: gpui-component paints an input's glyphs in the theme's
 /// `foreground` and ignores the inherited text color, so the tint rides what the
@@ -110,6 +116,7 @@ const FIELD_W: f32 = 64.0;
 /// figure keeps the readout's data voice.
 pub fn labeled_slider_input(
     label: &'static str,
+    hint: SharedString,
     state: &Entity<SliderState>,
     input: &Entity<InputState>,
     suffix: &'static str,
@@ -136,18 +143,35 @@ pub fn labeled_slider_input(
     } else {
         field
     };
-    div()
-        .flex()
-        .flex_col()
-        .gap(theme::sp(6.))
-        .when(!label.is_empty(), |el| {
-            el.child(
+    // The label row: caption on the left, hint against the right edge. The
+    // caption's `flex_1` is what pushes the hint over — with an empty caption it
+    // is a bare spacer, so a hint-only row still lands where a labelled one's
+    // would.
+    let head = (!label.is_empty() || !hint.is_empty()).then(|| {
+        div()
+            .flex()
+            .items_center()
+            .gap(theme::sp(8.))
+            .child(
                 div()
+                    .flex_1()
                     .text_size(theme::sp(11.))
                     .text_color(theme::dim())
                     .child(label),
             )
-        })
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(theme::sp(10.))
+                    .text_color(theme::mute())
+                    .child(hint),
+            )
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme::sp(6.))
+        .when_some(head, |el, h| el.child(h))
         .child(
             div()
                 .flex()

@@ -506,15 +506,17 @@ impl Profiles {
 
         // ── NAME (inline-editable) ─────────────────────────────────────────
         let editing = self.name_edit.as_ref().filter(|e| e.row == i);
+        // The name hugs its text (capped for pathological names) so the badge
+        // can sit RIGHT AFTER it — name left, badge trailing the text, per
+        // user review; the old layout led with a fixed badge column.
         let name_cell = match editing {
             Some(edit) => div()
-                .flex_1()
-                .min_w(theme::sp(0.))
+                .w(theme::sp(260.))
                 .child(Input::new(&edit.input))
                 .into_any_element(),
             None => div()
                 .id(("prof-name", i))
-                .flex_1()
+                .max_w(theme::sp(340.))
                 .min_w(theme::sp(0.))
                 .px(theme::sp(8.))
                 .py(theme::sp(6.))
@@ -760,8 +762,16 @@ impl Profiles {
             .when(!is_active && !is_default, |el| {
                 el.hover(|s| s.bg(theme::panel_1()).border_color(theme::line()))
             })
-            .child(div().flex_none().w(theme::sp(72.)).child(status))
-            .child(name_cell)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(theme::sp(0.))
+                    .flex()
+                    .items_center()
+                    .gap(theme::sp(10.))
+                    .child(name_cell)
+                    .child(status),
+            )
             .child(div().flex_none().w(theme::sp(200.)).child(link_cell))
             .child(kebab)
             .into_any_element()
