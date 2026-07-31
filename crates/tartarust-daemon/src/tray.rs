@@ -21,6 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::thread;
 
 use ksni::{Tray, TrayMethods};
 use tokio::sync::mpsc::UnboundedSender;
@@ -123,7 +124,7 @@ pub async fn spawn(quit_tx: UnboundedSender<()>) -> Option<ksni::Handle<Tartarus
 }
 
 /// Launch `tartarust-ui` as a detached child. Best-effort: logs on failure and
-/// never blocks or waits on the child.
+/// never blocks the caller on the child.
 fn launch_ui() {
     let bin = ui_binary_path();
     let mut cmd = Command::new(&bin);
@@ -137,11 +138,18 @@ fn launch_ui() {
     cmd.process_group(0);
 
     match cmd.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
             tracing::info!(pid = child.id(), bin = %bin.display(), "launched tartarust-ui from tray");
-            // Detached: never waited on. Dropping the handle leaves it running;
-            // on daemon exit the child is reparented to init.
-            drop(child);
+            // std does not reap on drop: without a wait() every UI opened from the
+            // tray would stay a zombie in the process table until the daemon exits.
+            let reaper = thread::Builder::new()
+                .name("tartarust-reap".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            if let Err(err) = reaper {
+                tracing::error!(?err, "failed to spawn reaper thread");
+            }
         }
         Err(err) => {
             tracing::error!(?err, bin = %bin.display(), "failed to launch tartarust-ui from tray");

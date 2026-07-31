@@ -39,8 +39,14 @@ pub fn set_scale(scale: f32, cx: &mut App) {
 }
 
 /// A scaled logical dimension: `sp(13.)` = 13 design-px at the global scale.
+///
+/// The result is rounded to a whole logical pixel. GPUI keys its GPU glyph atlas
+/// on the exact f32 font size and never evicts a tile, so every scale step that
+/// produced a fractional size used to rasterize a fresh copy of the whole glyph
+/// set. Rounding collapses the 6 reachable scales onto shared integer keys
+/// (78 distinct text sizes down to 31) and keeps hairlines on the pixel grid.
 pub fn sp(v: f32) -> Pixels {
-    px(v * scale())
+    px((v * scale()).round())
 }
 
 // --- Surfaces ----------------------------------------------------------------

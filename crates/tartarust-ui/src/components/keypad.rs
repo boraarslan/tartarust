@@ -20,7 +20,7 @@
 //!     so the popover anchors to whichever cap was clicked. The popover element
 //!     supplies its own `.absolute()` offsets.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use gpui::prelude::*;
@@ -160,6 +160,36 @@ pub type PointerHandler = Rc<dyn Fn(CapPointer, &mut Window, &mut App)>;
 /// mode the host should switch TO.
 pub type AxisModeHandler = Rc<dyn Fn(ThumbAxisMode, &mut Window, &mut App)>;
 
+/// Live per-cap analog pressure (0..255), one slot per input ([`key_slot`]).
+///
+/// A `Copy` array rather than a keyed map: Calibration rebuilds this on every
+/// frame a pressure fill is still gliding — up to the display's refresh rate —
+/// and an array is built on the stack where a `HashMap<String, u8>` cost an
+/// allocation per cap, twice a frame.
+#[derive(Clone, Copy)]
+pub struct Pressures([Option<u8>; KEY_SLOTS]);
+
+impl Default for Pressures {
+    fn default() -> Self {
+        Self([None; KEY_SLOTS])
+    }
+}
+
+impl Pressures {
+    /// Record one cap's pressure. Inputs the board does not draw are ignored.
+    pub fn set(&mut self, key: KeyId, pressure: u8) {
+        if let Some(slot) = self.0.get_mut(key_slot(key)) {
+            *slot = Some(pressure);
+        }
+    }
+
+    /// One cap's pressure, or `None` where the daemon reports no analog byte
+    /// for it (unmapped grid caps, and every digital input).
+    fn get(self, key: KeyId) -> Option<u8> {
+        self.0.get(key_slot(key)).copied().flatten()
+    }
+}
+
 /// The rendered keypad. Build with [`Keypad::new`] and layer the optional inputs
 /// on with the builder methods; everything not set renders as a static board.
 #[derive(IntoElement)]
@@ -170,7 +200,7 @@ pub struct Keypad {
     binds: BTreeMap<String, BindAction>,
     lighting: LightingState,
     thumb_axis_mode: ThumbAxisMode,
-    pressures: Option<HashMap<String, u8>>,
+    pressures: Option<Pressures>,
     multi_selected: BTreeSet<KeyId>,
     customized: BTreeSet<String>,
     selected: Option<KeyId>,
@@ -231,11 +261,11 @@ impl Keypad {
         self
     }
 
-    /// Live per-key analog pressure (evdev name -> 0..255), driven by Calibration.
-    /// `None` renders exactly as a static keypad; `Some` fills the grid and
-    /// spacebar caps from the bottom. The 8-way pad, wheel, and thumb button are
-    /// digital-only and never carry pressure.
-    pub fn pressures(mut self, pressures: Option<HashMap<String, u8>>) -> Self {
+    /// Live per-cap analog pressure, driven by Calibration. `None` renders
+    /// exactly as a static keypad; `Some` fills the grid and spacebar caps from
+    /// the bottom. The 8-way pad, wheel, and thumb button are digital-only and
+    /// never carry pressure.
+    pub fn pressures(mut self, pressures: Option<Pressures>) -> Self {
         self.pressures = pressures;
         self
     }
@@ -247,8 +277,8 @@ impl Keypad {
     }
 
     /// Analog caps whose actuation settings deviate from the defaults, keyed by
-    /// evdev name like `pressures`. Each gets a small marker dot so customized
-    /// keys read at a glance (Calibration; empty elsewhere).
+    /// evdev name. Each gets a small marker dot so customized keys read at a
+    /// glance (Calibration; empty elsewhere).
     pub fn customized(mut self, keys: BTreeSet<String>) -> Self {
         self.customized = keys;
         self
@@ -418,9 +448,7 @@ impl Keypad {
 
     /// This cap's live pressure, if the host is feeding any.
     fn press_of(&self, key: KeyId) -> Option<u8> {
-        self.pressures
-            .as_ref()
-            .and_then(|m| key.evdev().and_then(|n| m.get(n).copied()))
+        self.pressures.and_then(|p| p.get(key))
     }
 
     /// Whether this cap's actuation deviates from the defaults.

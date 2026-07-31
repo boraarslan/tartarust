@@ -71,7 +71,8 @@ use crate::components::widgets::{
     btn_ghost, labeled_slider_input, nudge_next_frame, page_head, switch_row,
 };
 use crate::components::{
-    CapPhase, CapPointer, KeyPicker, KeyPickerEvent, Keypad, KeypadMode, key_picker_trigger,
+    CapPhase, CapPointer, KeyPicker, KeyPickerEvent, Keypad, KeypadMode, Pressures,
+    key_picker_trigger,
 };
 use crate::ipc;
 use crate::model::{AppState, GRID_EVDEV, KeyId, Layer, pretty_key};
@@ -79,7 +80,7 @@ use crate::store;
 use crate::theme;
 
 /// How often to re-poll the live analog state while this view is alive.
-const POLL_INTERVAL_MS: u64 = 100;
+const POLL_INTERVAL_MS: u64 = 50;
 
 /// How long the single-key editor must have been quiet before a daemon config
 /// that disagrees with it is treated as an EXTERNAL change and re-seeded.
@@ -210,8 +211,11 @@ pub struct Calibration {
     /// entry while the daemon was perfectly reachable.
     polled_once: bool,
     /// Displayed per-key pressures, gliding toward the polled values — the
-    /// poll ticks at 100 ms and painting those raw steps reads as stutter.
-    smooth: HashMap<String, f32>,
+    /// poll ticks at [`POLL_INTERVAL_MS`] and painting those raw steps reads as
+    /// stutter. Keyed by the key's analog BYTE INDEX, the `Copy` id the poll
+    /// already carries, so the render path advances this map in place instead
+    /// of rebuilding an evdev-name-keyed one every frame.
+    smooth: HashMap<u8, f32>,
     /// Edit Mode: the docked bulk editor is open iff this is set.
     edit_mode: bool,
     /// The multi-selection (Edit Mode's target, and a drag's accumulator).
@@ -252,7 +256,7 @@ pub struct Calibration {
     picker: Entity<KeyPicker>,
     picker_open: bool,
 
-    /// The 100 ms poll. Held, not detached: dropping the task cancels it.
+    /// The live poll. Held, not detached: dropping the task cancels it.
     _poll: Task<()>,
 }
 
@@ -375,7 +379,7 @@ impl Calibration {
         // Poll `GetAnalogState` on an interval. The blocking read runs on the
         // background executor; the result lands back on the foreground. Writing
         // only on a real change keeps an idle keypad (the same frame every tick)
-        // from repainting this view 10x/second.
+        // from repainting this view on every tick.
         // Fetch-first, THEN tick: the first poll answers immediately instead of
         // one interval late, which both shrinks the not-yet-polled window and
         // keeps the offline banner from flashing on screen entry (see
@@ -444,59 +448,54 @@ impl Calibration {
 
     // --- Derived views of the polled state ---------------------------------
 
-    /// Per-key pressure for the keypad overlay, keyed by evdev name: for each
-    /// configured analog key, its byte in the live frame. Grid caps the daemon
-    /// hasn't mapped (and the digital thumb/wheel) get nothing; offline the map
-    /// is simply empty.
-    fn pressures_map(&self) -> HashMap<String, u8> {
-        let Some(a) = self.analog.as_ref() else {
-            return HashMap::new();
-        };
-        a.keys
-            .iter()
-            .map(|cfg| {
-                (
-                    cfg.key.clone(),
-                    a.pressures.get(cfg.index as usize).copied().unwrap_or(0),
-                )
-            })
-            .collect()
-    }
-
     /// Advance the DISPLAYED pressures one exponential step toward the live
-    /// poll values and return them for the keypad. The poll ticks at 100 ms;
-    /// painting those steps raw reads as stutter, so the fill glides at frame
-    /// rate — while any key is still gliding, the next frame is requested so
-    /// the animation keeps running between poll ticks.
+    /// poll values and return them for the keypad. The poll ticks at
+    /// [`POLL_INTERVAL_MS`]; painting those steps raw reads as stutter, so the
+    /// fill glides at frame rate — while any key is still gliding, the next
+    /// frame is requested so the animation keeps running between poll ticks.
+    ///
+    /// This runs on EVERY paint, so it allocates on none: the smoothing map is
+    /// advanced in place under its `Copy` byte-index key, and the keypad's
+    /// pressures are a fixed array built on the stack. Grid caps the daemon
+    /// hasn't mapped (and the digital thumb/wheel) get nothing; offline every
+    /// slot is simply empty.
     fn step_pressure_smoothing(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> HashMap<String, u8> {
-        let target = self.pressures_map();
+    ) -> Pressures {
+        let mut shown = Pressures::default();
+        let Self { analog, smooth, .. } = self;
+        let Some(a) = analog.as_ref() else {
+            smooth.clear();
+            return shown;
+        };
+
         // Keys that vanished (daemon restart, mode change) stop animating.
-        self.smooth.retain(|k, _| target.contains_key(k));
+        smooth.retain(|i, _| a.keys.iter().any(|c| c.index == *i));
         let mut animating = false;
-        for (key, &t) in &target {
-            let shown = self.smooth.entry(key.clone()).or_insert(t as f32);
-            let delta = t as f32 - *shown;
+        for cfg in &a.keys {
+            let t = a.pressures.get(cfg.index as usize).copied().unwrap_or(0) as f32;
+            let v = smooth.entry(cfg.index).or_insert(t);
+            let delta = t - *v;
             if delta.abs() < 1.0 {
-                *shown = t as f32;
+                *v = t;
             } else {
-                *shown += delta * 0.35;
+                *v += delta * 0.35;
                 animating = true;
             }
+            if let Some(key) = cap_of_evdev(&cfg.key) {
+                shown.set(key, v.round() as u8);
+            }
         }
+
         if animating {
             let entity = cx.entity().downgrade();
             window.on_next_frame(move |_, cx| {
                 let _ = entity.update(cx, |_, cx| cx.notify());
             });
         }
-        self.smooth
-            .iter()
-            .map(|(k, v)| (k.clone(), v.round() as u8))
-            .collect()
+        shown
     }
 
     /// One analog key's live pressure, by byte index.
@@ -510,12 +509,10 @@ impl Calibration {
     /// One analog key's DISPLAYED (smoothed) pressure, by byte index — the
     /// same gliding value the keypad paints, so the single-key editor's and
     /// the bulk panel's live bars move smoothly too instead of stepping at
-    /// the raw 100 ms poll rate.
+    /// the raw poll rate.
     fn smoothed_of(&self, index: u8) -> u8 {
-        self.analog
-            .as_ref()
-            .and_then(|a| a.keys.iter().find(|k| k.index == index))
-            .and_then(|k| self.smooth.get(&k.key))
+        self.smooth
+            .get(&index)
             .map(|v| v.round() as u8)
             .unwrap_or_else(|| self.pressure_of(index))
     }
@@ -1830,6 +1827,18 @@ fn all_analog_ids() -> BTreeSet<KeyId> {
         .collect()
 }
 
+/// The cap an analog config names. The daemon reports its analog keys by evdev
+/// name and the keypad draws them by [`KeyId`], so the two are matched by name
+/// here for the same reason [`Calibration::cfg_for`] matches that way: analog
+/// actuation is not grid-only — the spacebar is an analog byte too. A name no
+/// cap claims (a daemon key we do not draw) yields `None`.
+fn cap_of_evdev(name: &str) -> Option<KeyId> {
+    if let Some(i) = GRID_EVDEV.iter().position(|&n| n == name) {
+        return Some(KeyId::Grid(i as u8));
+    }
+    (KeyId::Space.evdev() == Some(name)).then_some(KeyId::Space)
+}
+
 /// Which side the actuation popover opens on, and how far from its cap's edge.
 ///
 /// It opens toward the board's centre (to the LEFT of its cap) for the right
@@ -1877,6 +1886,21 @@ mod tests {
         assert!(ids.contains(&KeyId::Grid(18)));
         // Digital-only inputs carry no pressure byte and must not be selectable.
         assert!(!ids.contains(&KeyId::ThumbButton));
+    }
+
+    #[test]
+    fn every_analog_cap_resolves_from_its_evdev_name() {
+        // Every cap the screen offers must come back from the name the daemon
+        // reports it under, or its pressure fill never reaches the board.
+        for id in all_analog_ids() {
+            assert_eq!(cap_of_evdev(id.evdev().unwrap()), Some(id));
+        }
+        // The spacebar is an analog byte but NOT a grid cap: a resolution that
+        // only walked `GRID_EVDEV` would silently drop it.
+        assert_eq!(cap_of_evdev("KEY_SPACE"), Some(KeyId::Space));
+        // Names no cap claims resolve to nothing rather than to cap 0.
+        assert_eq!(cap_of_evdev("KEY_LEFTALT"), None);
+        assert_eq!(cap_of_evdev(""), None);
     }
 
     #[test]

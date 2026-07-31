@@ -6,8 +6,15 @@
 //! for macros — means a macro's inter-step sleeps never block the engine thread
 //! that is reading physical events; at worst they queue behind the macro on the
 //! output thread, which is the desired "macro plays out atomically" behavior.
+//!
+//! That queue is unbounded, so macro REQUESTS are rate-limited instead: only one
+//! macro at a time is in flight, and a request that arrives while one is still
+//! queued or playing is dropped. See [`run_macro`].
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
@@ -24,7 +31,13 @@ pub enum OutputCmd {
     /// Emit a batch of events immediately (uinput appends one `SYN_REPORT`).
     Emit(Vec<InputEvent>),
     /// Play a macro (already-lowered) once, honoring its delays.
-    RunMacro(Vec<MacroAction>),
+    RunMacro {
+        actions: Vec<MacroAction>,
+        /// The poster's in-flight guard. It was set before this command was
+        /// queued; the output thread clears it once playback ends, which is what
+        /// lets the poster send the next macro. See [`run_macro`].
+        in_flight: Arc<AtomicBool>,
+    },
 }
 
 /// Handle to the output thread. Drop it (or call [`OutputHandle::shutdown`]) to
@@ -140,7 +153,7 @@ fn output_loop(mut device: VirtualDevice, rx: Receiver<OutputCmd>) {
                     tracing::warn!(?err, "failed to emit events");
                 }
             }
-            OutputCmd::RunMacro(actions) => {
+            OutputCmd::RunMacro { actions, in_flight } => {
                 for action in actions {
                     match action {
                         MacroAction::Emit(events) => {
@@ -162,16 +175,66 @@ fn output_loop(mut device: VirtualDevice, rx: Receiver<OutputCmd>) {
                         MacroAction::Delay(d) => thread::sleep(d),
                     }
                 }
+                // Playback (sleeps included) is over: release the in-flight slot
+                // so the next request is accepted. Cleared HERE and not when the
+                // command was dequeued, so the guard covers the whole playback.
+                in_flight.store(false, Ordering::SeqCst);
             }
         }
     }
     tracing::debug!("output thread exiting; virtual device will be destroyed");
 }
 
+thread_local! {
+    /// This thread's macro in-flight guard: `true` while a macro it posted is
+    /// queued or playing on the output thread. Created on first use, then
+    /// reused. See [`run_macro`] for why it lives in a thread-local.
+    static IN_FLIGHT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
 /// Helper to lower a config macro and post it to the output thread in one step.
+///
+/// At most ONE macro is in flight (queued or playing) per posting thread: a
+/// request that arrives while the previous one has not finished is DROPPED, not
+/// queued. WHY: playback runs inline on the output thread and sleeps for every
+/// `Delay` step, so a macro-bound key tapped during a long macro would otherwise
+/// pile up copies of the lowered macro in the unbounded channel — kilobytes per
+/// copy — and keep replaying them long after the user stopped tapping. The
+/// engine already swallows autorepeat for macro binds; this covers discrete
+/// taps. Dropping the NEW request (rather than the playing one) keeps the
+/// "a macro plays out atomically" contract.
+///
+/// The guard is an `Arc<AtomicBool>` shared with the output thread: claimed here
+/// before the send, carried with the macro, cleared there when playback ends.
+/// The poster's half lives in a thread-local because a poster holds nothing but
+/// a cloned `Sender`, which carries no identity to hang per-channel state off
+/// of. Macros are posted from exactly one thread — the engine actor, whose
+/// dispatch is the sole caller — so per-thread IS per-output-thread here; a
+/// second posting thread would just get its own one-macro budget, which still
+/// bounds the queue.
 pub fn run_macro(tx: &Sender<OutputCmd>, steps: &[MacroStep]) {
-    let actions = lower(steps);
-    let _ = tx.send(OutputCmd::RunMacro(actions));
+    IN_FLIGHT.with_borrow_mut(|slot| {
+        let in_flight = slot.get_or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        // false -> true claims the slot. Err means a macro is still in flight
+        // (the compare_exchange also keeps two posters from both claiming it).
+        if in_flight
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            tracing::debug!("a macro is already queued or playing; dropping this request");
+            return;
+        }
+        let actions = lower(steps);
+        let cmd = OutputCmd::RunMacro {
+            actions,
+            in_flight: Arc::clone(in_flight),
+        };
+        if tx.send(cmd).is_err() {
+            // The output thread is gone, so nothing will ever clear the guard.
+            // Release it here; otherwise this thread could never post again.
+            in_flight.store(false, Ordering::SeqCst);
+        }
+    });
 }
 
 /// Construct the virtual device, declaring a broad set of keys, mouse buttons,
@@ -200,4 +263,67 @@ fn build_virtual_device() -> std::io::Result<VirtualDevice> {
         .with_keys(&keys)?
         .with_relative_axes(&axes)?
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guard is thread-local and libtest may reuse a thread between tests,
+    /// so each test starts from a known-clear guard.
+    fn reset_guard() {
+        IN_FLIGHT.with_borrow_mut(|slot| *slot = None);
+    }
+
+    fn steps() -> Vec<MacroStep> {
+        vec![
+            MacroStep::Press {
+                key: "KEY_A".into(),
+            },
+            MacroStep::Release {
+                key: "KEY_A".into(),
+            },
+        ]
+    }
+
+    /// A macro-bound key tapped again while the first macro is still queued or
+    /// playing must NOT enqueue a second copy (that is the unbounded-growth bug).
+    #[test]
+    fn macro_request_dropped_while_one_is_in_flight() {
+        reset_guard();
+        let (tx, rx) = mpsc::channel::<OutputCmd>();
+
+        run_macro(&tx, &steps());
+        run_macro(&tx, &steps());
+        run_macro(&tx, &steps());
+        let queued: Vec<_> = rx.try_iter().collect();
+        assert_eq!(queued.len(), 1, "only the first macro may be queued");
+
+        // Clear the guard the way the output thread does when playback ends.
+        let OutputCmd::RunMacro { in_flight, .. } = &queued[0] else {
+            panic!("expected a RunMacro command");
+        };
+        in_flight.store(false, Ordering::SeqCst);
+
+        run_macro(&tx, &steps());
+        assert_eq!(
+            rx.try_iter().count(),
+            1,
+            "a macro posted after playback ended must be queued"
+        );
+    }
+
+    /// A send onto a dead channel (output thread gone) must not leave the guard
+    /// claimed forever — nothing else would ever clear it.
+    #[test]
+    fn failed_send_releases_the_guard() {
+        reset_guard();
+        let (dead_tx, dead_rx) = mpsc::channel::<OutputCmd>();
+        drop(dead_rx);
+        run_macro(&dead_tx, &steps());
+
+        let (tx, rx) = mpsc::channel::<OutputCmd>();
+        run_macro(&tx, &steps());
+        assert_eq!(rx.try_iter().count(), 1);
+    }
 }

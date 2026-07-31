@@ -12,6 +12,7 @@
 //! through `store::fire` and inherits its optimistic-edit + resync policy.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -1109,14 +1110,35 @@ fn menu_item(
 
 // --- Export / import ---------------------------------------------------------
 
+/// Set while a [`bounded_blocking`] worker is inside its operation — including
+/// after the caller gave up on it, which is the case that matters.
+static FILE_IO_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Cleared when the worker leaves the operation, on an unwind as well as a
+/// normal return: a panicking operation must not lock export/import out for the
+/// rest of the session.
+struct FileIoGuard;
+
+impl Drop for FileIoGuard {
+    fn drop(&mut self) {
+        FILE_IO_BUSY.store(false, Ordering::Release);
+    }
+}
+
 /// Run a blocking file operation off the UI thread, bounded so a hung
-/// filesystem (NFS, autofs) can't pin the busy dialog forever. The background
+/// filesystem (NFS, autofs) can't pin the busy dialog forever. The worker
 /// thread may linger past the timeout; the dialog does not.
 ///
 /// GPUI ships no timeout combinator and this crate pulls in no futures
-/// utilities, so the bound is a poll: the work runs on the background executor
-/// and hands its result back through a channel the caller checks between short
-/// timers.
+/// utilities, so the bound is a poll: the work runs on a thread of its own and
+/// hands its result back through a channel the caller checks between short
+/// timers. A thread of its own, not a background-executor task, because GPUI's
+/// Linux dispatcher serves its queue from a fixed pool sized to the core count
+/// — one stranded syscall per timed-out attempt would starve every background
+/// task in the app, daemon IPC included. A throwaway thread strands only itself.
+///
+/// [`FILE_IO_BUSY`] keeps those throwaway threads from stacking up: while one is
+/// still blocked, a fresh attempt is refused instead of started.
 async fn bounded_blocking<T: Send + 'static>(
     what: &'static str,
     cx: &mut AsyncApp,
@@ -1125,12 +1147,24 @@ async fn bounded_blocking<T: Send + 'static>(
     const DEADLINE: Duration = Duration::from_secs(10);
     const POLL: Duration = Duration::from_millis(20);
 
+    if FILE_IO_BUSY.swap(true, Ordering::AcqRel) {
+        return Err(format!(
+            "cannot start {what}: an earlier file operation is still blocked — \
+             the path may be on a hung mount, so wait for it or restart the app"
+        ));
+    }
+
     let (tx, rx) = std::sync::mpsc::channel();
-    cx.background_executor()
-        .spawn(async move {
-            let _ = tx.send(op());
-        })
-        .detach();
+    std::thread::spawn(move || {
+        // Release the guard BEFORE the send, so the caller can never observe a
+        // result whose worker still counts as in flight and be refused its next
+        // attempt.
+        let value = {
+            let _guard = FileIoGuard;
+            op()
+        };
+        let _ = tx.send(value);
+    });
 
     let started = Instant::now();
     loop {
