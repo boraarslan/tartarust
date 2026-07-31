@@ -27,7 +27,7 @@ crates:
   package plus all six member crates inherit it with `version.workspace = true`.
   Do not add a literal `version = "x.y.z"` to any member crate; that would let
   them drift.
-- **Current version: `0.1.1`.** To release a new version, edit that single
+- **Current version: `0.2.0`.** To release a new version, edit that single
   `[workspace.package].version` field and everything moves together.
 - **Semver intent:** pre-1.0, treat `0.MINOR.PATCH` as breaking-allowed on
   `MINOR`. The `tartarust-ipc` wire schema is the compatibility surface between a

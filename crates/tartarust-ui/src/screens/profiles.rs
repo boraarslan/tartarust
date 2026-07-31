@@ -998,6 +998,11 @@ impl Render for Profiles {
 fn badge(text: &'static str, ink: Rgba, bg: Rgba, mono: &SharedString) -> gpui::Div {
     div()
         .flex_none()
+        // Layout centering: the badge column stretches the pill wider than
+        // its text, which otherwise sits left (user review).
+        .flex()
+        .items_center()
+        .justify_center()
         .px(theme::sp(7.))
         .py(theme::sp(3.))
         .rounded(theme::sp(3.))

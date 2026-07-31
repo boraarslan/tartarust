@@ -367,6 +367,19 @@ impl Calibration {
             .unwrap_or(0)
     }
 
+    /// One analog key's DISPLAYED (smoothed) pressure, by byte index — the
+    /// same gliding value the keypad paints, so the single-key editor's and
+    /// the bulk panel's live bars move smoothly too instead of stepping at
+    /// the raw 100 ms poll rate.
+    fn smoothed_of(&self, index: u8) -> u8 {
+        self.analog
+            .as_ref()
+            .and_then(|a| a.keys.iter().find(|k| k.index == index))
+            .and_then(|k| self.smooth.get(&k.key))
+            .map(|v| v.round() as u8)
+            .unwrap_or_else(|| self.pressure_of(index))
+    }
+
     /// The analog config for a cap, when the daemon has one. Analog actuation
     /// isn't grid-only — the spacebar (`KEY_SPACE`) is an analog byte too — so
     /// any bindable cap is matched by evdev name; digital caps (the thumb
@@ -951,7 +964,7 @@ impl Calibration {
         let count = cfgs.len();
         let live_max = cfgs
             .iter()
-            .map(|c| self.pressure_of(c.index))
+            .map(|c| self.smoothed_of(c.index))
             .max()
             .unwrap_or(0);
         let names: String = cfgs
@@ -1135,7 +1148,7 @@ impl Render for Calibration {
             let (open_left, offset) = popover_anchor(*key);
             deferred(self.cal_modal(
                 cfg,
-                self.pressure_of(cfg.index),
+                self.smoothed_of(cfg.index),
                 open_left,
                 offset,
                 &mono,

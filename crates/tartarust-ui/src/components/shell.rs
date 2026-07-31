@@ -554,6 +554,21 @@ impl Render for Shell {
             .font_family(theme::sans(cx))
             .text_size(theme::sp(13.))
             .text_color(theme::ink())
+            // Ctrl+scroll zooms the UI scale (finer steps than the statusbar
+            // stepper). Plain scrolling passes through to the lists untouched.
+            .on_scroll_wheel(cx.listener(|_, ev: &gpui::ScrollWheelEvent, _, cx| {
+                if !ev.modifiers.control {
+                    return;
+                }
+                cx.stop_propagation();
+                let notches = match ev.delta {
+                    gpui::ScrollDelta::Lines(l) => l.y,
+                    gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 20.0,
+                };
+                if notches != 0.0 {
+                    theme::set_scale(theme::scale() + notches.signum() * 0.1, cx);
+                }
+            }))
             .child(masthead)
             .child(tab_rail)
             .child(content)
