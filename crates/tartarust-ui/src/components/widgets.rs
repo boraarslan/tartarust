@@ -6,6 +6,8 @@
 
 use gpui::prelude::*;
 use gpui::{App, ClickEvent, Div, Entity, Rgba, SharedString, Window, div};
+use gpui_component::Sizable;
+use gpui_component::input::{Input, InputState};
 use gpui_component::slider::{Slider, SliderState};
 
 use crate::theme;
@@ -87,6 +89,84 @@ pub fn labeled_slider(
                         .text_size(theme::sp(11.))
                         .text_color(if amber { theme::amber() } else { theme::ink() })
                         .child(readout),
+                ),
+        )
+}
+
+/// The editable readout's width in [`labeled_slider_input`] — wide enough for
+/// a signed 2-decimal figure plus the caret, narrow enough that the slider keeps
+/// the row.
+const FIELD_W: f32 = 64.0;
+
+/// A slider row whose readout is EDITABLE: the [`labeled_slider`] chassis, with
+/// a narrow text field carrying the value and a quiet unit suffix after it. The
+/// caller owns the `InputState` and decides when a typed value commits (Enter,
+/// blur) — this only lays the row out.
+///
+/// The amber variant tints the field's border and the suffix rather than the
+/// field's text: gpui-component paints an input's glyphs in the theme's
+/// `foreground` and ignores the inherited text color, so the tint rides what the
+/// element style can actually reach. The mono family DOES inherit, so the typed
+/// figure keeps the readout's data voice.
+pub fn labeled_slider_input(
+    label: &'static str,
+    state: &Entity<SliderState>,
+    input: &Entity<InputState>,
+    suffix: &'static str,
+    amber: bool,
+    cx: &App,
+) -> impl IntoElement {
+    let slider = if amber {
+        // Per-element override: the shared theme colors the default rust.
+        div().child(Slider::new(state)).text_color(theme::amber())
+    } else {
+        div().child(Slider::new(state))
+    };
+    // Sized off the kit's scale, not a fixed `Size`, so the field's text tracks
+    // the UI scale like every other readout (gpui-component takes 0.875 of it).
+    // A custom `Size` falls back to fixed px for the box itself, so the height
+    // and padding are restated in `sp` — the element style is refined last, so
+    // these win.
+    let field = Input::new(input)
+        .with_size(theme::sp(12.5))
+        .h(theme::sp(24.))
+        .px(theme::sp(8.));
+    let field = if amber {
+        field.border_color(theme::amber())
+    } else {
+        field
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(theme::sp(6.))
+        .when(!label.is_empty(), |el| {
+            el.child(
+                div()
+                    .text_size(theme::sp(11.))
+                    .text_color(theme::dim())
+                    .child(label),
+            )
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(theme::sp(8.))
+                .child(div().flex_1().child(slider))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(theme::sp(FIELD_W))
+                        .font_family(theme::mono(cx))
+                        .child(field),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(theme::sp(11.))
+                        .text_color(if amber { theme::amber() } else { theme::mute() })
+                        .child(suffix),
                 ),
         )
 }

@@ -28,6 +28,17 @@
 //! state seeded from the config (re-seeded when the selection moves to another
 //! analog key), so dragging never fights the refresh.
 //!
+//! **Travel readouts.** Every actuation slider's readout is an EDITABLE field in
+//! millimetres — type a depth, press Enter (or leave the field) and it applies.
+//! The device speaks a raw 0..255 byte and no byte-exact byte→mm table is public
+//! (`docs/research/03-analog-actuation.md`: "mm → byte value mapping unknown"),
+//! so the byte is mapped LINEARLY over the switches' 4.0 mm optical travel — a
+//! documented approximation, not a calibration. The BYTE stays the authority:
+//! every clamp, invariant, and push is byte-domain, and a typed depth is
+//! converted, clamped to its slider's range, then applied through the same
+//! setter the drag uses. A depth between two bytes therefore snaps to the
+//! nearest one and the field redraws with what the device actually took.
+//!
 //! Offline (no daemon — the cage harness) or in digital mode there are no live
 //! bars; each non-live state renders an intentional banner, not dead sliders.
 //!
@@ -47,12 +58,13 @@ use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, MouseButton, Rgba, SharedString, Task,
     Window, deferred, div, linear_color_stop, linear_gradient, relative, rgb, rgba,
 };
+use gpui_component::input::{InputEvent, InputState};
 use gpui_component::slider::{SliderEvent, SliderState};
 
 use tartarust_ipc::{AnalogKeyConfig, AnalogState, DEFAULT_ACTUATION_POINT, DEFAULT_RELEASE_POINT};
 
 use crate::components::widgets::{
-    btn_ghost, labeled_slider, nudge_next_frame, page_head, switch_row,
+    btn_ghost, labeled_slider_input, nudge_next_frame, page_head, switch_row,
 };
 use crate::components::{
     CapPhase, CapPointer, KeyPicker, KeyPickerEvent, Keypad, KeypadMode, key_picker_trigger,
@@ -90,6 +102,23 @@ const SPACE_CAP_W: f32 = 130.0;
 /// second action. Both are what the daemon's own defaults imply, not policy.
 const SEED_SECOND_POINT: u8 = 0xC0;
 const SEED_SECOND_ACTION: &str = "KEY_LEFTSHIFT";
+
+/// Total optical travel of the Tartarus Pro's analog switches, in mm. Synapse
+/// exposes 1.5–3.6 mm of it as the actuation range; the full stroke is 4.0 mm.
+/// See the module header for why the byte→mm map is linear.
+const TRAVEL_MM: f32 = 4.0;
+
+/// Which threshold an editable travel field commits to. One subscription body
+/// serves all five: the field parses to a byte and hands it to the same setter
+/// its slider's `SliderEvent::Change` calls.
+#[derive(Clone, Copy)]
+enum Field {
+    Actuation,
+    Release,
+    Second,
+    BulkActuation,
+    BulkRelease,
+}
 
 /// Local, optimistic edit state for the single-key actuation editor. Seeded from
 /// the daemon-reported config and re-seeded when the selection moves to a
@@ -147,9 +176,16 @@ pub struct Calibration {
     /// The single-key editor's local edit state, live only while its cap is
     /// selected AND resolves to an analog config.
     edit: Option<KeyEdit>,
+    /// Each threshold's slider and its editable travel field. The two are two
+    /// views of one byte: the slider owns the drag, the field owns the typed
+    /// depth, and [`Calibration::sync_inputs`] keeps the field showing whatever
+    /// the byte became.
     act_slider: Entity<SliderState>,
+    act_input: Entity<InputState>,
     rel_slider: Entity<SliderState>,
+    rel_input: Entity<InputState>,
     second_slider: Entity<SliderState>,
+    second_input: Entity<InputState>,
 
     /// Bulk (Edit Mode) values. Seeded from the first selected key when Edit
     /// Mode opens; reshaping the selection keeps them — they are what you are
@@ -157,7 +193,9 @@ pub struct Calibration {
     bulk_act: u8,
     bulk_rel: u8,
     bulk_act_slider: Entity<SliderState>,
+    bulk_act_input: Entity<InputState>,
     bulk_rel_slider: Entity<SliderState>,
+    bulk_rel_input: Entity<InputState>,
 
     /// The second-action picker, and whether its panel is showing.
     picker: Entity<KeyPicker>,
@@ -187,43 +225,85 @@ impl Calibration {
         let bulk_act_slider = cx.new(|_| slider_state(1.0, 255.0, DEFAULT_ACTUATION_POINT));
         let bulk_rel_slider = cx.new(|_| slider_state(0.0, 254.0, DEFAULT_RELEASE_POINT));
 
+        let act_input = cx.new(|cx| travel_input(DEFAULT_ACTUATION_POINT, window, cx));
+        let rel_input = cx.new(|cx| travel_input(DEFAULT_RELEASE_POINT, window, cx));
+        let second_input = cx.new(|cx| travel_input(SEED_SECOND_POINT, window, cx));
+        let bulk_act_input = cx.new(|cx| travel_input(DEFAULT_ACTUATION_POINT, window, cx));
+        let bulk_rel_input = cx.new(|cx| travel_input(DEFAULT_RELEASE_POINT, window, cx));
+
         // Each slider drives its value + the dependent thresholds, then pushes.
         // The clamps mirror the old `on_input` handlers exactly; where a clamp
         // moves a value the owning slider is re-seeded so its thumb follows.
-        cx.subscribe(&act_slider, |this: &mut Self, _, ev: &SliderEvent, cx| {
-            let SliderEvent::Change(v) = ev;
-            this.set_actuation(slider_u8(v.start()), cx);
-        })
+        // Subscribed WITH the window: every setter ends by writing the new byte
+        // back into the editable fields, and that write needs one.
+        cx.subscribe_in(
+            &act_slider,
+            window,
+            |this: &mut Self, _, ev: &SliderEvent, window, cx| {
+                let SliderEvent::Change(v) = ev;
+                this.set_actuation(slider_u8(v.start()), window, cx);
+            },
+        )
         .detach();
-        cx.subscribe(&rel_slider, |this: &mut Self, _, ev: &SliderEvent, cx| {
-            let SliderEvent::Change(v) = ev;
-            this.set_release(slider_u8(v.start()), cx);
-        })
+        cx.subscribe_in(
+            &rel_slider,
+            window,
+            |this: &mut Self, _, ev: &SliderEvent, window, cx| {
+                let SliderEvent::Change(v) = ev;
+                this.set_release(slider_u8(v.start()), window, cx);
+            },
+        )
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &second_slider,
-            |this: &mut Self, _, ev: &SliderEvent, cx| {
+            window,
+            |this: &mut Self, _, ev: &SliderEvent, window, cx| {
                 let SliderEvent::Change(v) = ev;
-                this.set_second_point(slider_u8(v.start()), cx);
+                this.set_second_point(slider_u8(v.start()), window, cx);
             },
         )
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &bulk_act_slider,
-            |this: &mut Self, _, ev: &SliderEvent, cx| {
+            window,
+            |this: &mut Self, _, ev: &SliderEvent, window, cx| {
                 let SliderEvent::Change(v) = ev;
-                this.set_bulk_actuation(slider_u8(v.start()), cx);
+                this.set_bulk_actuation(slider_u8(v.start()), window, cx);
             },
         )
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &bulk_rel_slider,
-            |this: &mut Self, _, ev: &SliderEvent, cx| {
+            window,
+            |this: &mut Self, _, ev: &SliderEvent, window, cx| {
                 let SliderEvent::Change(v) = ev;
-                this.set_bulk_release(slider_u8(v.start()), cx);
+                this.set_bulk_release(slider_u8(v.start()), window, cx);
             },
         )
         .detach();
+
+        // Enter and blur both commit, the same contract the Customize screen's
+        // Launch field carries. `Change` is deliberately NOT a commit: pushing
+        // per keystroke would fire a `SetActuation` for every intermediate
+        // number you type through.
+        for (input, field) in [
+            (&act_input, Field::Actuation),
+            (&rel_input, Field::Release),
+            (&second_input, Field::Second),
+            (&bulk_act_input, Field::BulkActuation),
+            (&bulk_rel_input, Field::BulkRelease),
+        ] {
+            cx.subscribe_in(
+                input,
+                window,
+                move |this: &mut Self, _, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.commit_field(field, window, cx);
+                    }
+                },
+            )
+            .detach();
+        }
 
         let picker = cx.new(|cx| KeyPicker::new(window, cx));
         cx.subscribe(&picker, |this: &mut Self, _, ev: &KeyPickerEvent, cx| {
@@ -281,12 +361,17 @@ impl Calibration {
             dragging: false,
             edit: None,
             act_slider,
+            act_input,
             rel_slider,
+            rel_input,
             second_slider,
+            second_input,
             bulk_act: DEFAULT_ACTUATION_POINT,
             bulk_rel: DEFAULT_RELEASE_POINT,
             bulk_act_slider,
+            bulk_act_input,
             bulk_rel_slider,
+            bulk_rel_input,
             picker,
             picker_open: false,
             _poll: poll,
@@ -297,7 +382,7 @@ impl Calibration {
         // click. No effect in normal use (the var is unset).
         if std::env::var("TARTARUST_CAL_EDIT").as_deref() == Ok("1") {
             this.multi = all_analog_ids();
-            this.enter_edit_mode(cx);
+            this.enter_edit_mode(window, cx);
         }
         this
     }
@@ -434,7 +519,7 @@ impl Calibration {
     /// from the first selected key (defaults when nothing resolves — the
     /// offline case). Every entry point (toolbar, Shift+click, drag release)
     /// comes through here, which is what mounting the old panel did.
-    fn enter_edit_mode(&mut self, cx: &mut Context<Self>) {
+    fn enter_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let first = self.multi_cfgs().into_iter().next();
         self.bulk_act = first
             .as_ref()
@@ -444,20 +529,21 @@ impl Calibration {
             .map_or(DEFAULT_RELEASE_POINT, |c| c.release_point);
         seed_slider(&self.bulk_act_slider, 1.0, 255.0, self.bulk_act, cx);
         seed_slider(&self.bulk_rel_slider, 0.0, 254.0, self.bulk_rel, cx);
+        self.sync_inputs(window, cx);
         self.edit_mode = true;
         nudge_next_frame(cx);
     }
 
     /// The toolbar toggle: entering selects EVERY analog cap, exiting clears the
     /// selection.
-    fn toggle_edit_mode(&mut self, cx: &mut Context<Self>) {
+    fn toggle_edit_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_mode {
             self.edit_mode = false;
             self.multi.clear();
         } else {
             self.clear_selection(cx);
             self.multi = all_analog_ids();
-            self.enter_edit_mode(cx);
+            self.enter_edit_mode(window, cx);
         }
         cx.notify();
     }
@@ -470,7 +556,7 @@ impl Calibration {
     /// `Enter` arrives once per mouse-move sample over a cap rather than once
     /// per entry (the ported keypad rides `on_mouse_move`), so the extend must
     /// stay idempotent — inserting an already-selected cap is.
-    fn on_cap_pointer(&mut self, p: CapPointer, cx: &mut Context<Self>) {
+    fn on_cap_pointer(&mut self, p: CapPointer, window: &mut Window, cx: &mut Context<Self>) {
         match p.phase {
             CapPhase::Down => {
                 if self.edit_mode {
@@ -482,7 +568,7 @@ impl Calibration {
                 } else if p.shift {
                     // Shift+click enters Edit Mode immediately with this cap.
                     self.multi.insert(p.key);
-                    self.enter_edit_mode(cx);
+                    self.enter_edit_mode(window, cx);
                     self.dragging = true;
                     self.clear_selection(cx);
                 } else {
@@ -515,7 +601,7 @@ impl Calibration {
                 }
                 if self.multi.len() > 1 {
                     // A real multi-key drag → Edit Mode with that selection.
-                    self.enter_edit_mode(cx);
+                    self.enter_edit_mode(window, cx);
                     self.clear_selection(cx);
                 } else {
                     // A single click: fall back to the normal single-key editor,
@@ -538,8 +624,14 @@ impl Calibration {
 
     // --- Single-key edits ---------------------------------------------------
 
-    /// Re-seed the editor (and its sliders) for a newly selected analog key.
-    fn seed_key_edit(&mut self, cfg: &AnalogKeyConfig, cx: &mut Context<Self>) {
+    /// Re-seed the editor (its sliders and their travel fields) for a newly
+    /// selected analog key.
+    fn seed_key_edit(
+        &mut self,
+        cfg: &AnalogKeyConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let edit = KeyEdit::seed(cfg);
         seed_slider(
             &self.act_slider,
@@ -552,7 +644,79 @@ impl Calibration {
         seed_slider(&self.second_slider, 1.0, 255.0, edit.second_point, cx);
         self.edit = Some(edit);
         self.picker_open = false;
+        self.sync_inputs(window, cx);
         nudge_next_frame(cx);
+    }
+
+    // --- Editable travel fields ---------------------------------------------
+
+    /// The `InputState` a field's typed depth lives in.
+    fn input_of(&self, field: Field) -> &Entity<InputState> {
+        match field {
+            Field::Actuation => &self.act_input,
+            Field::Release => &self.rel_input,
+            Field::Second => &self.second_input,
+            Field::BulkActuation => &self.bulk_act_input,
+            Field::BulkRelease => &self.bulk_rel_input,
+        }
+    }
+
+    /// The byte range a field accepts — exactly the min/max its slider carries,
+    /// so a typed depth outside it lands where dragging the thumb to that end
+    /// would. The actuation ceiling moves with the dual-step, same as the
+    /// slider's.
+    fn range_of(&self, field: Field) -> (u8, u8) {
+        match field {
+            Field::Actuation => {
+                let second_on = self.edit.as_ref().is_some_and(|e| e.second_on);
+                (1, act_max(second_on) as u8)
+            }
+            Field::Release => (0, 254),
+            Field::Second => (1, 255),
+            Field::BulkActuation => (1, 255),
+            Field::BulkRelease => (0, 254),
+        }
+    }
+
+    /// Commit one editable travel field (Enter or blur). Text that is not a
+    /// number — including an empty field — changes nothing and the current value
+    /// is put back, so a half-typed figure can never push a threshold. A parsed
+    /// depth becomes the raw byte, is clamped to the field's range, then goes
+    /// through the SAME setter the slider's `Change` calls: the dependent
+    /// clamps, the schema invariants, and the push are identical either way.
+    fn commit_field(&mut self, field: Field, window: &mut Window, cx: &mut Context<Self>) {
+        let typed = self.input_of(field).read(cx).value();
+        let Ok(mm) = typed.trim().parse::<f32>() else {
+            self.sync_inputs(window, cx);
+            return;
+        };
+        let (lo, hi) = self.range_of(field);
+        let value = mm_to_byte(mm).clamp(lo, hi);
+        match field {
+            Field::Actuation => self.set_actuation(value, window, cx),
+            Field::Release => self.set_release(value, window, cx),
+            Field::Second => self.set_second_point(value, window, cx),
+            Field::BulkActuation => self.set_bulk_actuation(value, window, cx),
+            Field::BulkRelease => self.set_bulk_release(value, window, cx),
+        }
+    }
+
+    /// Write the current bytes back into the travel fields, so a drag, a
+    /// re-seed, or a dependent clamp shows up in the numbers the moment it
+    /// lands. Every setter ends here.
+    ///
+    /// The text is written only when it actually differs: `set_value` moves the
+    /// caret to the end and emits `Change`, so a no-op rewrite would fight the
+    /// field while you type in it. The commit rides `PressEnter`/`Blur` alone,
+    /// so that emitted `Change` cannot loop back into a push either way.
+    fn sync_inputs(&self, window: &mut Window, cx: &mut App) {
+        if let Some(e) = self.edit.as_ref() {
+            set_travel(&self.act_input, e.actuation, window, cx);
+            set_travel(&self.rel_input, e.release, window, cx);
+            set_travel(&self.second_input, e.second_point, window, cx);
+        }
+        set_travel(&self.bulk_act_input, self.bulk_act, window, cx);
+        set_travel(&self.bulk_rel_input, self.bulk_rel, window, cx);
     }
 
     /// Send the current edit state to the daemon, upholding the schema
@@ -585,7 +749,7 @@ impl Calibration {
         );
     }
 
-    fn set_actuation(&mut self, value: u8, cx: &mut Context<Self>) {
+    fn set_actuation(&mut self, value: u8, window: &mut Window, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
         e.actuation = value;
         // Keep the dependent thresholds consistent as actuation moves, so the
@@ -607,10 +771,11 @@ impl Calibration {
             seed_slider(&self.second_slider, 1.0, 255.0, second, cx);
         }
         self.push_key_edit(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
-    fn set_release(&mut self, value: u8, cx: &mut Context<Self>) {
+    fn set_release(&mut self, value: u8, window: &mut Window, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
         // Clamp below actuation (hysteresis): a release >= actuation would
         // chatter, and the daemon rejects it.
@@ -620,10 +785,11 @@ impl Calibration {
             seed_slider(&self.rel_slider, 0.0, 254.0, clamped, cx);
         }
         self.push_key_edit(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
-    fn set_second_point(&mut self, value: u8, cx: &mut Context<Self>) {
+    fn set_second_point(&mut self, value: u8, window: &mut Window, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
         // Must be deeper than the primary actuation point.
         let clamped = value.max(e.actuation.saturating_add(1));
@@ -632,10 +798,11 @@ impl Calibration {
             seed_slider(&self.second_slider, 1.0, 255.0, clamped, cx);
         }
         self.push_key_edit(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
-    fn toggle_second(&mut self, on: bool, cx: &mut Context<Self>) {
+    fn toggle_second(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
         e.second_on = on;
         if on {
@@ -651,12 +818,13 @@ impl Calibration {
         seed_slider(&self.act_slider, 1.0, act_max(on), act, cx);
         seed_slider(&self.second_slider, 1.0, 255.0, second, cx);
         self.push_key_edit(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
     /// Reset this key to the default thresholds and drop any dual-step (mirrors
     /// the Customize editor's reset affordance).
-    fn reset_key(&mut self, cx: &mut Context<Self>) {
+    fn reset_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
         e.actuation = DEFAULT_ACTUATION_POINT;
         e.release = DEFAULT_RELEASE_POINT;
@@ -665,6 +833,7 @@ impl Calibration {
         seed_slider(&self.rel_slider, 0.0, 254.0, DEFAULT_RELEASE_POINT, cx);
         self.picker_open = false;
         self.push_key_edit(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
@@ -724,23 +893,25 @@ impl Calibration {
         }
     }
 
-    fn set_bulk_actuation(&mut self, value: u8, cx: &mut Context<Self>) {
+    fn set_bulk_actuation(&mut self, value: u8, window: &mut Window, cx: &mut Context<Self>) {
         self.bulk_act = value;
         if self.bulk_rel >= value {
             self.bulk_rel = value.saturating_sub(1);
             seed_slider(&self.bulk_rel_slider, 0.0, 254.0, self.bulk_rel, cx);
         }
         self.apply_bulk(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
-    fn set_bulk_release(&mut self, value: u8, cx: &mut Context<Self>) {
+    fn set_bulk_release(&mut self, value: u8, window: &mut Window, cx: &mut Context<Self>) {
         let clamped = value.min(self.bulk_act.saturating_sub(1));
         self.bulk_rel = clamped;
         if clamped != value {
             seed_slider(&self.bulk_rel_slider, 0.0, 254.0, clamped, cx);
         }
         self.apply_bulk(cx);
+        self.sync_inputs(window, cx);
         cx.notify();
     }
 
@@ -785,7 +956,9 @@ impl Calibration {
                             .hover(|s| s.text_color(theme::ink()).border_color(theme::ink()))
                     })
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_edit_mode(cx)))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.toggle_edit_mode(window, cx)
+                    }))
                     .child(if on { "Exit Edit Mode" } else { "Edit Mode" }),
             )
     }
@@ -875,17 +1048,19 @@ impl Calibration {
                     .child(press_readout(pressure, mono)),
             )
             .child(divider())
-            .child(labeled_slider(
+            .child(labeled_slider_input(
                 "Actuation point",
                 &self.act_slider,
-                readout(e.actuation),
+                &self.act_input,
+                "mm",
                 false,
                 cx,
             ))
-            .child(labeled_slider(
+            .child(labeled_slider_input(
                 "Release point",
                 &self.rel_slider,
-                readout(e.release),
+                &self.rel_input,
+                "mm",
                 false,
                 cx,
             ))
@@ -894,13 +1069,14 @@ impl Calibration {
                 "cal-dual-step",
                 "Dual-step (second function)",
                 e.second_on,
-                cx.listener(|this, on: &bool, _, cx| this.toggle_second(*on, cx)),
+                cx.listener(|this, on: &bool, window, cx| this.toggle_second(*on, window, cx)),
             ))
             .when(e.second_on, |el| {
-                el.child(labeled_slider(
+                el.child(labeled_slider_input(
                     "Second actuation point",
                     &self.second_slider,
-                    readout(e.second_point),
+                    &self.second_input,
+                    "mm",
                     true,
                     cx,
                 ))
@@ -938,7 +1114,7 @@ impl Calibration {
             .child(btn_ghost(
                 "cal-reset-key",
                 "Reset to default",
-                cx.listener(|this, _: &ClickEvent, _, cx| this.reset_key(cx)),
+                cx.listener(|this, _: &ClickEvent, window, cx| this.reset_key(window, cx)),
             ))
             .into_any_element()
     }
@@ -1051,17 +1227,19 @@ impl Calibration {
                         .child(press_readout(live_max, mono)),
                 )
                 .child(divider())
-                .child(labeled_slider(
+                .child(labeled_slider_input(
                     "Actuation point",
                     &self.bulk_act_slider,
-                    readout(self.bulk_act),
+                    &self.bulk_act_input,
+                    "mm",
                     false,
                     cx,
                 ))
-                .child(labeled_slider(
+                .child(labeled_slider_input(
                     "Release point",
                     &self.bulk_rel_slider,
-                    readout(self.bulk_rel),
+                    &self.bulk_rel_input,
+                    "mm",
                     false,
                     cx,
                 ))
@@ -1094,7 +1272,7 @@ impl Render for Calibration {
         // before the values are read below, so the re-seed shows this frame.
         match &editing {
             Some((_, cfg)) if self.edit.as_ref().map(|e| e.index) != Some(cfg.index) => {
-                self.seed_key_edit(cfg, cx);
+                self.seed_key_edit(cfg, window, cx);
             }
             None if self.edit.is_some() => {
                 self.edit = None;
@@ -1135,7 +1313,8 @@ impl Render for Calibration {
         // The keypad's pointer protocol takes its `CapPointer` BY VALUE, and a
         // view listener takes its event by reference, so the listener is wrapped
         // rather than handed over raw.
-        let listener = cx.listener(|this, p: &CapPointer, _, cx| this.on_cap_pointer(*p, cx));
+        let listener =
+            cx.listener(|this, p: &CapPointer, window, cx| this.on_cap_pointer(*p, window, cx));
         let pointer = Rc::new(move |p: CapPointer, window: &mut Window, cx: &mut App| {
             listener(&p, window, cx)
         });
@@ -1385,9 +1564,38 @@ fn frac(v: u8) -> f32 {
     (v as f32 / 255.0).clamp(0.0, 1.0)
 }
 
-/// A slider's monospace readout: the raw value plus its percentage.
-fn readout(v: u8) -> String {
-    format!("{v} ({}%)", pct100(v))
+/// A raw actuation byte as its approximate travel depth, in mm. Linear over
+/// [`TRAVEL_MM`] — see the module header for why.
+fn byte_to_mm(b: u8) -> f32 {
+    b as f32 / 255.0 * TRAVEL_MM
+}
+
+/// A typed travel depth back to the raw byte, saturating at both ends of the
+/// stroke so a wild figure cannot wrap. The caller still clamps to the control's
+/// own range.
+fn mm_to_byte(mm: f32) -> u8 {
+    (mm / TRAVEL_MM * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// A threshold's editable readout: its travel depth to 2 decimals.
+fn mm_text(v: u8) -> String {
+    format!("{:.2}", byte_to_mm(v))
+}
+
+/// One threshold's travel field, seeded with its byte's depth.
+fn travel_input(value: u8, window: &mut Window, cx: &mut Context<InputState>) -> InputState {
+    InputState::new(window, cx).default_value(mm_text(value))
+}
+
+/// Show a byte's travel depth in a field, unless the field already reads that —
+/// see [`Calibration::sync_inputs`] for why the no-op write is skipped.
+fn set_travel(input: &Entity<InputState>, value: u8, window: &mut Window, cx: &mut App) {
+    let text = mm_text(value);
+    input.update(cx, |state, cx| {
+        if state.value() != *text {
+            state.set_value(text, window, cx);
+        }
+    });
 }
 
 /// The actuation slider's ceiling. A dual-step needs strictly-deeper headroom,
@@ -1510,9 +1718,37 @@ mod tests {
         assert_eq!(pct100(255), 100);
         assert_eq!(frac(0), 0.0);
         assert_eq!(frac(255), 1.0);
-        assert_eq!(readout(255), "255 (100%)");
         // The dual-step's headroom rule, as the slider ceiling sees it.
         assert_eq!(act_max(true), 254.0);
         assert_eq!(act_max(false), 255.0);
+    }
+
+    #[test]
+    fn travel_readouts_span_the_optical_stroke() {
+        // The ends are exact; everything between is the documented linear map.
+        assert_eq!(mm_text(0), "0.00");
+        assert_eq!(mm_text(255), "4.00");
+        assert_eq!(mm_text(148), "2.32");
+        assert_eq!(mm_text(DEFAULT_ACTUATION_POINT), "1.51");
+    }
+
+    #[test]
+    fn every_byte_survives_a_trip_through_mm() {
+        // A field shows a depth and reads one back, so the map must not lose a
+        // byte anywhere in the range — otherwise a blur alone would move a
+        // threshold the user never touched.
+        for b in 0..=255u8 {
+            assert_eq!(mm_to_byte(byte_to_mm(b)), b, "byte {b}");
+        }
+    }
+
+    #[test]
+    fn typed_depths_outside_the_stroke_saturate() {
+        assert_eq!(mm_to_byte(-1.0), 0);
+        assert_eq!(mm_to_byte(0.0), 0);
+        assert_eq!(mm_to_byte(TRAVEL_MM), 255);
+        assert_eq!(mm_to_byte(99.0), 255);
+        // A depth between two bytes snaps to the nearer one.
+        assert_eq!(mm_to_byte(byte_to_mm(100) + 0.004), 100);
     }
 }

@@ -566,7 +566,7 @@ impl Render for Shell {
                     gpui::ScrollDelta::Pixels(p) => f32::from(p.y) / 20.0,
                 };
                 if notches != 0.0 {
-                    theme::set_scale(theme::scale() + notches.signum() * 0.1, cx);
+                    theme::set_scale(theme::scale() + notches.signum() * theme::SCALE_STEP, cx);
                 }
             }))
             .child(masthead)
