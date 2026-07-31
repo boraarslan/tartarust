@@ -34,8 +34,7 @@ mod store;
 mod theme;
 
 use gpui::{
-    App, AppContext as _, Application, Bounds, WindowBounds, WindowDecorations, WindowOptions, px,
-    size,
+    App, AppContext as _, Application, Bounds, WindowBounds, WindowDecorations, WindowOptions, size,
 };
 
 use components::Shell;
@@ -81,7 +80,9 @@ pub fn run_app() {
         let store = cx.new(|_| model::mock_state());
         store::spawn_initial_load(store.clone(), cx);
 
-        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
+        // Design size 1280×800, scaled with the rest of the UI (theme::SCALE)
+        // so the layout is identical at any density.
+        let bounds = Bounds::centered(None, size(theme::sp(1280.), theme::sp(800.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

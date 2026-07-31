@@ -5,7 +5,7 @@
 //! the bench-instrument voice.
 
 use gpui::prelude::*;
-use gpui::{App, ClickEvent, Div, Entity, Rgba, SharedString, Window, div, px};
+use gpui::{App, ClickEvent, Div, Entity, Rgba, SharedString, Window, div};
 use gpui_component::slider::{Slider, SliderState};
 
 use crate::theme;
@@ -14,8 +14,8 @@ use crate::theme;
 /// head deliberately carries no title — just one quiet instructional sentence.
 pub fn page_head(sub: &'static str) -> impl IntoElement {
     div()
-        .pb(px(14.))
-        .text_size(px(12.))
+        .pb(theme::sp(14.))
+        .text_size(theme::sp(12.))
         .text_color(theme::dim())
         .child(sub)
 }
@@ -23,12 +23,12 @@ pub fn page_head(sub: &'static str) -> impl IntoElement {
 /// A status LED dot. `on` colors are literal annunciators (live/amber/red);
 /// [`led_off`] is the dead state.
 pub fn led(color: Rgba) -> Div {
-    div().size(px(8.)).rounded_full().bg(color)
+    div().size(theme::sp(8.)).rounded_full().bg(color)
 }
 
 pub fn led_off() -> Div {
     div()
-        .size(px(8.))
+        .size(theme::sp(8.))
         .rounded_full()
         .bg(theme::panel_2())
         .border_1()
@@ -54,11 +54,11 @@ pub fn labeled_slider(
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(theme::sp(6.))
         .when(!label.is_empty(), |el| {
             el.child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(theme::sp(11.))
                     .text_color(theme::dim())
                     .child(label),
             )
@@ -67,12 +67,12 @@ pub fn labeled_slider(
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
+                .gap(theme::sp(10.))
                 .child(div().flex_1().child(slider))
                 .child(
                     div()
                         .font_family(theme::mono(cx))
-                        .text_size(px(11.))
+                        .text_size(theme::sp(11.))
                         .text_color(if amber { theme::amber() } else { theme::ink() })
                         .child(readout),
                 ),
@@ -90,8 +90,8 @@ pub fn switch_row(
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(12.))
-        .child(div().text_size(px(12.)).child(label.into()))
+        .gap(theme::sp(12.))
+        .child(div().text_size(theme::sp(12.)).child(label.into()))
         .child(
             gpui_component::switch::Switch::new(id)
                 .checked(on)
@@ -110,9 +110,9 @@ pub fn segmented(
     let on_select = std::rc::Rc::new(on_select);
     div()
         .flex()
-        .p(px(2.))
-        .gap(px(2.))
-        .rounded(px(theme::RADIUS_SM))
+        .p(theme::sp(2.))
+        .gap(theme::sp(2.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .bg(theme::panel_0())
         .border_1()
         .border_color(theme::line_soft())
@@ -121,10 +121,10 @@ pub fn segmented(
             let is_active = i == active;
             div()
                 .id((id_prefix, i))
-                .px(px(10.))
-                .py(px(4.))
-                .rounded(px(theme::RADIUS_SM - 1.0))
-                .text_size(px(11.))
+                .px(theme::sp(10.))
+                .py(theme::sp(4.))
+                .rounded(theme::sp(theme::RADIUS_SM - 1.0))
+                .text_size(theme::sp(11.))
                 .when(is_active, |el| {
                     el.bg(theme::panel_2()).text_color(theme::ink())
                 })
@@ -143,10 +143,10 @@ pub fn segmented(
 fn btn_base(id: (&'static str, u32), label: SharedString) -> gpui::Stateful<Div> {
     div()
         .id(id)
-        .px(px(12.))
-        .py(px(5.))
-        .rounded(px(theme::RADIUS_SM))
-        .text_size(px(12.))
+        .px(theme::sp(12.))
+        .py(theme::sp(5.))
+        .rounded(theme::sp(theme::RADIUS_SM))
+        .text_size(theme::sp(12.))
         .cursor_pointer()
         .child(label)
 }
@@ -196,9 +196,9 @@ pub fn card() -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .p(px(14.))
-        .rounded(px(theme::RADIUS))
+        .gap(theme::sp(12.))
+        .p(theme::sp(14.))
+        .rounded(theme::sp(theme::RADIUS))
         .bg(theme::panel_1())
         .border_1()
         .border_color(theme::line_soft())

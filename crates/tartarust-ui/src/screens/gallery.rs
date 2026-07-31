@@ -3,7 +3,7 @@
 //! linked from the tab rail.
 
 use gpui::prelude::*;
-use gpui::{Context, Entity, Window, div, px};
+use gpui::{Context, Entity, Window, div};
 use gpui_component::input::{Input, InputState};
 use gpui_component::slider::{SliderEvent, SliderState};
 
@@ -74,14 +74,14 @@ impl Render for Gallery {
         div()
             .flex()
             .flex_col()
-            .gap(px(14.))
-            .p(px(22.))
+            .gap(theme::sp(14.))
+            .p(theme::sp(22.))
             .size_full()
             .child(page_head("Phase 2 widget kit — dev-only gallery."))
             .child(
                 div()
                     .flex()
-                    .gap(px(14.))
+                    .gap(theme::sp(14.))
                     .child(
                         card()
                             .flex_1()
@@ -125,17 +125,17 @@ impl Render for Gallery {
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(8.))
+                                    .gap(theme::sp(8.))
                                     .child(btn_primary("gal-save", "Save", |_, _, _| {}))
                                     .child(btn_ghost("gal-cancel", "Cancel", |_, _, _| {}))
                                     .child(btn_danger("gal-del", "Delete", |_, _, _| {})),
                             )
-                            .child(div().flex().gap(px(6.)).children(
+                            .child(div().flex().gap(theme::sp(6.)).children(
                                 SWATCHES.iter().enumerate().map(|(i, c)| {
                                     div()
                                         .id(("gal-swatch", i))
-                                        .size(px(22.))
-                                        .rounded(px(theme::RADIUS_SM))
+                                        .size(theme::sp(22.))
+                                        .rounded(theme::sp(theme::RADIUS_SM))
                                         .bg(gpui::rgb(*c))
                                         .border_1()
                                         .border_color(theme::line())
@@ -146,14 +146,14 @@ impl Render for Gallery {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(10.))
+                                    .gap(theme::sp(10.))
                                     .child(led(theme::live()))
                                     .child(led(theme::amber()))
                                     .child(led(theme::red()))
                                     .child(led_off())
                                     .child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(theme::sp(11.))
                                             .text_color(theme::dim())
                                             .child("annunciators"),
                                     ),

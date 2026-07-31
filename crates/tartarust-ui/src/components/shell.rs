@@ -9,7 +9,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-use gpui::{ClickEvent, Context, Entity, MouseButton, MouseDownEvent, Window, div, px};
+use gpui::{ClickEvent, Context, Entity, MouseButton, MouseDownEvent, Window, div};
 
 use super::widgets::{led, led_off};
 use crate::model::{AppState, Layer};
@@ -173,12 +173,12 @@ fn window_button(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .w(px(34.))
-        .h(px(26.))
+        .w(theme::sp(34.))
+        .h(theme::sp(26.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(theme::RADIUS_SM))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .text_color(theme::mute())
         .hover(|s| s.bg(theme::panel_1()).text_color(theme::ink()))
         .cursor_pointer()
@@ -212,15 +212,20 @@ impl Render for Shell {
         let brand = div()
             .flex()
             .items_center()
-            .gap(px(11.))
-            .child(div().size(px(10.)).rounded(px(2.)).bg(theme::rust()))
+            .gap(theme::sp(11.))
+            .child(
+                div()
+                    .size(theme::sp(10.))
+                    .rounded(theme::sp(2.))
+                    .bg(theme::rust()),
+            )
             .child(
                 div()
                     .child(
                         div()
                             .flex()
                             .font_family(mono.clone())
-                            .text_size(px(13.5))
+                            .text_size(theme::sp(13.5))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(theme::ink())
                             .child("TARTA")
@@ -229,7 +234,7 @@ impl Render for Shell {
                     .child(
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(8.5))
+                            .text_size(theme::sp(8.5))
                             .text_color(theme::mute())
                             .child("TARTARUS PRO · CONTROL SURFACE"),
                     ),
@@ -240,9 +245,9 @@ impl Render for Shell {
         let annunciator = div()
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(theme::sp(8.))
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(theme::sp(10.))
             .text_color(theme::dim())
             .child(if offline {
                 led_off()
@@ -263,8 +268,8 @@ impl Render for Shell {
         let profile_cluster = div()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .text_size(px(12.))
+            .gap(theme::sp(8.))
+            .text_size(theme::sp(12.))
             .text_color(theme::dim())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child("Profile")
@@ -273,10 +278,10 @@ impl Render for Shell {
                     .id("profile-picker")
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .gap(theme::sp(6.))
+                    .px(theme::sp(8.))
+                    .py(theme::sp(3.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .border_1()
                     .border_color(theme::line())
                     .bg(theme::panel_0())
@@ -289,18 +294,23 @@ impl Render for Shell {
                         cx.notify();
                     }))
                     .child(active_profile.clone().unwrap_or_else(|| "—".into()))
-                    .child(div().text_size(px(9.)).text_color(theme::dim()).child("▾")),
+                    .child(
+                        div()
+                            .text_size(theme::sp(9.))
+                            .text_color(theme::dim())
+                            .child("▾"),
+                    ),
             )
             .when(!offline && unsaved, |el| {
                 el.child(
                     div()
                         .id("save-profile")
-                        .px(px(10.))
-                        .py(px(4.))
-                        .rounded(px(theme::RADIUS_SM))
+                        .px(theme::sp(10.))
+                        .py(theme::sp(4.))
+                        .rounded(theme::sp(theme::RADIUS_SM))
                         .bg(theme::rust())
                         .text_color(theme::chassis())
-                        .text_size(px(12.))
+                        .text_size(theme::sp(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .hover(|s| s.bg(theme::rust_hi()))
                         .cursor_pointer()
@@ -314,7 +324,7 @@ impl Render for Shell {
         let window_controls = div()
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(theme::sp(2.))
             .child(window_button("win-min", "–", |_, window, _| {
                 window.minimize_window();
             }))
@@ -329,10 +339,10 @@ impl Render for Shell {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(18.))
-            .h(px(54.))
-            .pl(px(26.))
-            .pr(px(14.))
+            .gap(theme::sp(18.))
+            .h(theme::sp(54.))
+            .pl(theme::sp(26.))
+            .pr(theme::sp(14.))
             .border_b_1()
             .border_color(theme::line_soft())
             .bg(theme::masthead_bg())
@@ -348,17 +358,17 @@ impl Render for Shell {
             .flex_none()
             .flex()
             .items_end()
-            .gap(px(4.))
-            .pl(px(22.))
+            .gap(theme::sp(4.))
+            .pl(theme::sp(22.))
             .border_b_1()
             .border_color(theme::line_soft())
             .children(Screen::ALL.map(|s| {
                 let active = s == screen;
                 div()
                     .id(s.label())
-                    .px(px(12.))
-                    .py(px(9.))
-                    .text_size(px(12.5))
+                    .px(theme::sp(12.))
+                    .py(theme::sp(9.))
+                    .text_size(theme::sp(12.5))
                     .text_color(if active { theme::ink() } else { theme::dim() })
                     .border_b_2()
                     .border_color(if active {
@@ -369,6 +379,13 @@ impl Render for Shell {
                     .hover(|st| st.text_color(theme::ink()))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        // Calibration polls the daemon at 100 ms while its view
+                        // is ALIVE (the task dies with the entity). Dropping it
+                        // on the way out reproduces the old cancel-on-unmount;
+                        // the other screens keep their state across visits.
+                        if this.screen == Screen::Calibration && s != Screen::Calibration {
+                            this.calibration_screen = None;
+                        }
                         this.screen = s;
                         this.ensure_screen(s, window, cx);
                         cx.notify();
@@ -414,17 +431,17 @@ impl Render for Shell {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(theme::sp(6.))
                         .child(
                             div()
                                 .font_family(mono.clone())
-                                .text_size(px(14.))
+                                .text_size(theme::sp(14.))
                                 .text_color(theme::ink())
                                 .child(screen.label().to_uppercase()),
                         )
                         .child(
                             div()
-                                .text_size(px(11.))
+                                .text_size(theme::sp(11.))
                                 .text_color(theme::mute())
                                 .child("GPUI port in progress — docs/GPUI_MIGRATION.md"),
                         ),
@@ -437,19 +454,19 @@ impl Render for Shell {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(16.))
-            .h(px(28.))
-            .px(px(14.))
+            .gap(theme::sp(16.))
+            .h(theme::sp(28.))
+            .px(theme::sp(14.))
             .border_t_1()
             .border_color(theme::line_soft())
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(theme::sp(10.))
             .text_color(theme::dim())
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(theme::sp(6.))
                     .child(if offline {
                         led_off()
                     } else {
@@ -470,7 +487,7 @@ impl Render for Shell {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(theme::sp(6.))
                         .text_color(theme::amber())
                         .child(led(theme::amber()))
                         .child("UNSAVED SESSION"),
@@ -485,7 +502,7 @@ impl Render for Shell {
             .size_full()
             .bg(theme::chassis())
             .font_family(theme::sans(cx))
-            .text_size(px(13.))
+            .text_size(theme::sp(13.))
             .text_color(theme::ink())
             .child(masthead)
             .child(tab_rail)
@@ -511,13 +528,13 @@ impl Render for Shell {
                 .child(
                     div()
                         .absolute()
-                        .top(px(46.))
-                        .right(px(120.))
-                        .w(px(220.))
+                        .top(theme::sp(46.))
+                        .right(theme::sp(120.))
+                        .w(theme::sp(220.))
                         .flex()
                         .flex_col()
-                        .p(px(4.))
-                        .rounded(px(theme::RADIUS))
+                        .p(theme::sp(4.))
+                        .rounded(theme::sp(theme::RADIUS))
                         .bg(theme::panel_1())
                         .border_1()
                         .border_color(theme::line())
@@ -527,11 +544,11 @@ impl Render for Shell {
                             let is_active = i == active_idx;
                             div()
                                 .id(("prof-row", i))
-                                .px(px(8.))
-                                .py(px(5.))
-                                .rounded(px(theme::RADIUS_SM))
+                                .px(theme::sp(8.))
+                                .py(theme::sp(5.))
+                                .rounded(theme::sp(theme::RADIUS_SM))
                                 .font_family(mono.clone())
-                                .text_size(px(12.))
+                                .text_size(theme::sp(12.))
                                 .text_color(if is_active {
                                     theme::rust()
                                 } else {

@@ -14,7 +14,7 @@
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, ClickEvent, Context, Entity, Rgba, Window, div, px, rgb};
+use gpui::{AnyElement, App, ClickEvent, Context, Entity, Rgba, Window, div, rgb};
 use gpui_component::slider::{SliderEvent, SliderState};
 
 use crate::components::widgets::{card, labeled_slider, page_head, segmented};
@@ -205,7 +205,7 @@ impl Lighting {
             .map(|(r, pair)| {
                 div()
                     .flex()
-                    .gap(px(6.))
+                    .gap(theme::sp(6.))
                     .children(pair.iter().enumerate().map(|(c, &label)| {
                         let store = self.store.clone();
                         chip(r * 2 + c, label, label == active, move |_, _, cx| {
@@ -217,7 +217,7 @@ impl Lighting {
 
         card()
             .child(card_title("EFFECT", cx))
-            .child(div().flex().flex_col().gap(px(6.)).children(rows))
+            .child(div().flex().flex_col().gap(theme::sp(6.)).children(rows))
             .into_any_element()
     }
 
@@ -401,7 +401,7 @@ impl Lighting {
             }
             None => div()
                 .font_family(theme::mono(cx))
-                .text_size(px(12.))
+                .text_size(theme::sp(12.))
                 .text_color(theme::dim())
                 .child("Click a key on the preview to paint its colour.")
                 .into_any_element(),
@@ -466,7 +466,7 @@ impl Render for Lighting {
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .p(px(22.))
+            .p(theme::sp(22.))
             .child(page_head(
                 "Pick an effect, dial in your colour, and set how bright the keys glow.",
             ))
@@ -474,15 +474,15 @@ impl Render for Lighting {
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(22.))
+                    .gap(theme::sp(22.))
                     .child(stage(keypad))
                     .child(
                         div()
                             .flex_none()
-                            .w(px(INSPECTOR_W))
+                            .w(theme::sp(INSPECTOR_W))
                             .flex()
                             .flex_col()
-                            .gap(px(16.))
+                            .gap(theme::sp(16.))
                             .child(self.effect_card(&effect, cx))
                             .children(self.effect_controls(&effect, selected, cx))
                             .child(self.brightness_card(brightness, cx)),
@@ -496,7 +496,7 @@ impl Render for Lighting {
 fn card_title(label: &'static str, cx: &App) -> impl IntoElement {
     div()
         .font_family(theme::mono(cx))
-        .text_size(px(10.))
+        .text_size(theme::sp(10.))
         .text_color(theme::mute())
         .child(label)
 }
@@ -511,10 +511,10 @@ fn stage(content: impl IntoElement) -> impl IntoElement {
         .min_w_0()
         .flex()
         .justify_center()
-        .pt(px(28.))
-        .px(px(26.))
-        .pb(px(24.))
-        .rounded(px(8.))
+        .pt(theme::sp(28.))
+        .px(theme::sp(26.))
+        .pb(theme::sp(24.))
+        .rounded(theme::sp(8.))
         .bg(theme::panel_0())
         .border_1()
         .border_color(theme::line_soft())
@@ -525,11 +525,20 @@ fn stage(content: impl IntoElement) -> impl IntoElement {
 
 /// One machined corner tick (CSS `.stage::before` / `.stage::after`).
 fn corner_tick(top_left: bool) -> impl IntoElement {
-    let tick = div().absolute().size(px(11.)).border_color(theme::line());
+    let tick = div()
+        .absolute()
+        .size(theme::sp(11.))
+        .border_color(theme::line());
     if top_left {
-        tick.top(px(9.)).left(px(9.)).border_t_1().border_l_1()
+        tick.top(theme::sp(9.))
+            .left(theme::sp(9.))
+            .border_t_1()
+            .border_l_1()
     } else {
-        tick.bottom(px(9.)).right(px(9.)).border_b_1().border_r_1()
+        tick.bottom(theme::sp(9.))
+            .right(theme::sp(9.))
+            .border_b_1()
+            .border_r_1()
     }
 }
 
@@ -546,11 +555,11 @@ fn chip(
         .flex()
         .items_center()
         .justify_center()
-        .px(px(10.))
-        .py(px(8.))
-        .rounded(px(theme::RADIUS_SM))
+        .px(theme::sp(10.))
+        .py(theme::sp(8.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .border_1()
-        .text_size(px(12.))
+        .text_size(theme::sp(12.))
         .font_weight(gpui::FontWeight::MEDIUM)
         .when(active, |el| {
             el.border_color(theme::rust())
@@ -597,7 +606,7 @@ fn color_picker(slot: usize, value: Rgb, on_pick: PickHandler, cx: &App) -> impl
         .map(|(r, row)| {
             div()
                 .flex()
-                .gap(px(SWATCH_GAP))
+                .gap(theme::sp(SWATCH_GAP))
                 .children(row.iter().enumerate().map(|(c, &(pr, pg, pb))| {
                     let preset = Rgb::new(pr, pg, pb);
                     let active = preset == value;
@@ -605,8 +614,8 @@ fn color_picker(slot: usize, value: Rgb, on_pick: PickHandler, cx: &App) -> impl
                     div()
                         .id(("lt-swatch", slot * PRESETS.len() + r * SWATCH_COLS + c))
                         .flex_1()
-                        .h(px(SWATCH_H))
-                        .rounded(px(theme::RADIUS_SM))
+                        .h(theme::sp(SWATCH_H))
+                        .rounded(theme::sp(theme::RADIUS_SM))
                         .bg(paint(preset))
                         // The stylesheet ringed the active swatch with a
                         // two-tone box-shadow; GPUI 0.2 has no spread-only
@@ -626,17 +635,23 @@ fn color_picker(slot: usize, value: Rgb, on_pick: PickHandler, cx: &App) -> impl
     div()
         .flex()
         .flex_col()
-        .gap(px(12.))
-        .child(div().flex().flex_col().gap(px(SWATCH_GAP)).children(rows))
+        .gap(theme::sp(12.))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(theme::sp(SWATCH_GAP))
+                .children(rows),
+        )
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(theme::sp(12.))
                 .child(
                     div()
-                        .size(px(42.))
-                        .rounded(px(theme::RADIUS_SM))
+                        .size(theme::sp(42.))
+                        .rounded(theme::sp(theme::RADIUS_SM))
                         .bg(paint(value))
                         .border_1()
                         .border_color(theme::line()),
@@ -644,7 +659,7 @@ fn color_picker(slot: usize, value: Rgb, on_pick: PickHandler, cx: &App) -> impl
                 .child(
                     div()
                         .font_family(theme::mono(cx))
-                        .text_size(px(14.))
+                        .text_size(theme::sp(14.))
                         .text_color(theme::ink())
                         .child(format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b)),
                 ),

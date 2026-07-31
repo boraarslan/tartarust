@@ -27,7 +27,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, FontWeight, MouseButton, SharedString,
-    Window, deferred, div, linear_color_stop, linear_gradient, px,
+    Window, deferred, div, linear_color_stop, linear_gradient,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -361,31 +361,31 @@ impl Customize {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(10.))
+            .gap(theme::sp(10.))
             .child(
                 div()
-                    .px(px(12.))
-                    .py(px(4.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .px(theme::sp(12.))
+                    .py(theme::sp(4.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .bg(machined_face())
                     .border_1()
                     .border_color(theme::line())
                     .font_family(e.mono.clone())
-                    .text_size(px(15.))
+                    .text_size(theme::sp(15.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(theme::ink())
                     .child(key.cap()),
             )
             .child(
                 div()
-                    .text_size(px(14.))
+                    .text_size(theme::sp(14.))
                     .text_color(theme::mute())
                     .child("→"),
             )
             .child(
                 div()
                     .font_family(e.mono.clone())
-                    .text_size(px(13.5))
+                    .text_size(theme::sp(13.5))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::rust())
                     .child(bind_value_label(e.bind.as_ref())),
@@ -394,19 +394,24 @@ impl Customize {
         // Type chips, two to a row — the stylesheet's `1fr 1fr` grid.
         let mut chip_rows: Vec<AnyElement> = Vec::new();
         for (r, pair) in Kind::ALL.chunks(2).enumerate() {
-            let mut row = div().flex().gap(px(6.));
+            let mut row = div().flex().gap(theme::sp(6.));
             for (c, &kind) in pair.iter().enumerate() {
                 let active = active_kind == kind;
                 row = row.child(
                     div()
                         .id(("cust-chip", r * 2 + c))
                         .flex_1()
-                        .px(px(10.))
-                        .py(px(8.))
-                        .rounded(px(theme::RADIUS_SM))
+                        .px(theme::sp(10.))
+                        .py(theme::sp(8.))
+                        .rounded(theme::sp(theme::RADIUS_SM))
                         .border_1()
-                        .text_size(px(12.))
-                        .text_center()
+                        .text_size(theme::sp(12.))
+                        // Layout centering, NOT `.text_center()`: the text-align
+                        // refinement gets lost under the hover style pass, which
+                        // left-aligned hovered chips (user review).
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .cursor_pointer()
                         .when(active, |el| {
                             el.border_color(theme::rust())
@@ -425,9 +430,19 @@ impl Customize {
                         .child(kind.label()),
                 );
             }
-            // A lone trailing chip keeps its half-width column.
+            // A lone trailing chip keeps its half-width column. The spacer
+            // mirrors the chip's padding + border (invisibly): flex bases are
+            // content-box, so a BARE flex_1 spacer concedes its padding/border
+            // width to the chip and the lone chip renders wider than a
+            // gridded one (user review: Disable overflowed the grid).
             if pair.len() == 1 {
-                row = row.child(div().flex_1());
+                row = row.child(
+                    div()
+                        .flex_1()
+                        .px(theme::sp(10.))
+                        .border_1()
+                        .border_color(gpui::transparent_black()),
+                );
             }
             chip_rows.push(row.into_any_element());
         }
@@ -443,7 +458,11 @@ impl Customize {
             .child(field(
                 "Bind type",
                 &e.mono,
-                div().flex().flex_col().gap(px(6.)).children(chip_rows),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(theme::sp(6.))
+                    .children(chip_rows),
             ))
             .child(field(
                 active_kind.value_label(),
@@ -526,9 +545,9 @@ impl Customize {
                 .child(div().w_full().child(Input::new(&self.launch_input)))
                 .child(
                     div()
-                        .mt(px(7.))
+                        .mt(theme::sp(7.))
                         .font_family(e.mono.clone())
-                        .text_size(px(13.))
+                        .text_size(theme::sp(13.))
                         .text_color(theme::mute())
                         .child(
                             "Space-separated: first token is the program, the rest are arguments.",
@@ -548,7 +567,7 @@ impl Customize {
     /// multimedia editor.
     fn chord_editor(&self, e: &Editor, keys: Vec<String>, cx: &Context<Self>) -> AnyElement {
         let key = e.key;
-        let mut row = div().flex().flex_wrap().items_center().gap(px(7.));
+        let mut row = div().flex().flex_wrap().items_center().gap(theme::sp(7.));
 
         for (i, name) in keys.iter().enumerate() {
             let chord = keys.clone();
@@ -556,16 +575,16 @@ impl Customize {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .pl(px(11.))
-                    .pr(px(8.))
-                    .py(px(6.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .gap(theme::sp(7.))
+                    .pl(theme::sp(11.))
+                    .pr(theme::sp(8.))
+                    .py(theme::sp(6.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .bg(machined_face())
                     .border_1()
                     .border_color(theme::line())
                     .font_family(e.mono.clone())
-                    .text_size(px(12.))
+                    .text_size(theme::sp(12.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::ink())
                     .child(key_label(name))
@@ -574,11 +593,11 @@ impl Customize {
                             .id(("cust-pill-x", i))
                             .flex()
                             .flex_none()
-                            .size(px(16.))
+                            .size(theme::sp(16.))
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.))
-                            .text_size(px(13.))
+                            .rounded(theme::sp(3.))
+                            .text_size(theme::sp(13.))
                             .text_color(theme::mute())
                             .hover(|s| s.bg(theme::red_wash()).text_color(theme::red()))
                             .cursor_pointer()
@@ -613,14 +632,14 @@ impl Customize {
                         .id("cust-chord-add")
                         .flex()
                         .items_center()
-                        .gap(px(5.))
-                        .px(px(11.))
-                        .py(px(6.))
-                        .rounded(px(theme::RADIUS_SM))
+                        .gap(theme::sp(5.))
+                        .px(theme::sp(11.))
+                        .py(theme::sp(6.))
+                        .rounded(theme::sp(theme::RADIUS_SM))
                         .border_1()
                         .border_dashed()
                         .border_color(if open { theme::rust() } else { theme::line() })
-                        .text_size(px(12.))
+                        .text_size(theme::sp(12.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(if open { theme::ink() } else { theme::dim() })
                         .hover(|s| s.border_color(theme::rust()).text_color(theme::ink()))
@@ -666,15 +685,15 @@ impl Customize {
             .w_full()
             .items_center()
             .justify_between()
-            .gap(px(8.))
-            .px(px(11.))
-            .py(px(9.))
-            .rounded(px(theme::RADIUS_SM))
+            .gap(theme::sp(8.))
+            .px(theme::sp(11.))
+            .py(theme::sp(9.))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
             .font_family(e.mono.clone())
-            .text_size(px(12.5))
+            .text_size(theme::sp(12.5))
             .text_color(if chosen { theme::ink() } else { theme::dim() })
             .hover(|s| s.bg(theme::panel_2()).border_color(theme::mute()))
             .cursor_pointer()
@@ -688,20 +707,25 @@ impl Customize {
             } else {
                 placeholder.to_string()
             })
-            .child(div().text_size(px(9.)).text_color(theme::dim()).child("▾"));
+            .child(
+                div()
+                    .text_size(theme::sp(9.))
+                    .text_color(theme::dim())
+                    .child("▾"),
+            );
 
         let mono = e.mono.clone();
         let list = div()
             .id("cust-name-list")
             .absolute()
-            .top(px(42.))
+            .top(theme::sp(42.))
             .left_0()
             .right_0()
-            .max_h(px(240.))
+            .max_h(theme::sp(240.))
             .flex()
             .flex_col()
-            .p(px(4.))
-            .rounded(px(theme::RADIUS))
+            .p(theme::sp(4.))
+            .rounded(theme::sp(theme::RADIUS))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
@@ -713,11 +737,11 @@ impl Customize {
                 let is_current = *name == current;
                 div()
                     .id(("cust-name-row", i))
-                    .px(px(8.))
-                    .py(px(5.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .px(theme::sp(8.))
+                    .py(theme::sp(5.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .font_family(mono.clone())
-                    .text_size(px(12.))
+                    .text_size(theme::sp(12.))
                     .text_color(if is_current {
                         theme::rust()
                     } else {
@@ -759,7 +783,7 @@ impl Customize {
         deferred(
             div()
                 .absolute()
-                .top(px(top))
+                .top(theme::sp(top))
                 .left_0()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.picker.clone()),
@@ -879,22 +903,24 @@ impl Render for Customize {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
+                .gap(theme::sp(12.))
                 // The stylesheet ruled the second board off from the first.
                 .when(shift, |el| {
-                    el.pt(px(22.)).border_t_1().border_color(theme::line_soft())
+                    el.pt(theme::sp(22.))
+                        .border_t_1()
+                        .border_color(theme::line_soft())
                 })
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .gap(px(8.))
+                        .gap(theme::sp(8.))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(theme::sp(10.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(if shift { theme::amber() } else { theme::mute() })
-                        .child(div().size(px(7.)).rounded_full().bg(accent))
+                        .child(div().size(theme::sp(7.)).rounded_full().bg(accent))
                         .child(if shift { "HYPERSHIFT" } else { "BASE" }),
                 )
                 .child(
@@ -912,10 +938,10 @@ impl Render for Customize {
             .relative()
             .flex()
             .flex_col()
-            .pt(px(28.))
-            .px(px(26.))
-            .pb(px(24.))
-            .rounded(px(8.))
+            .pt(theme::sp(28.))
+            .px(theme::sp(26.))
+            .pb(theme::sp(24.))
+            .rounded(theme::sp(8.))
             .bg(theme::panel_0())
             .border_1()
             .border_color(theme::line_soft())
@@ -923,7 +949,7 @@ impl Render for Customize {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(STACK_GAP))
+                    .gap(theme::sp(STACK_GAP))
                     .child(board(Layer::Base, base_binds))
                     .child(board(Layer::Hypershift, shift_binds)),
             )
@@ -932,9 +958,9 @@ impl Render for Customize {
             .child(
                 div()
                     .absolute()
-                    .top(px(9.))
-                    .left(px(9.))
-                    .size(px(11.))
+                    .top(theme::sp(9.))
+                    .left(theme::sp(9.))
+                    .size(theme::sp(11.))
                     .border_t_1()
                     .border_l_1()
                     .border_color(theme::line()),
@@ -942,9 +968,9 @@ impl Render for Customize {
             .child(
                 div()
                     .absolute()
-                    .bottom(px(9.))
-                    .right(px(9.))
-                    .size(px(11.))
+                    .bottom(theme::sp(9.))
+                    .right(theme::sp(9.))
+                    .size(theme::sp(11.))
                     .border_b_1()
                     .border_r_1()
                     .border_color(theme::line()),
@@ -961,7 +987,7 @@ impl Render for Customize {
                         .items_center()
                         .justify_between()
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(theme::sp(10.))
                         .text_color(theme::mute())
                         .child("BINDING")
                         .child(div().text_color(theme::rust()).child(key.cap())),
@@ -1008,7 +1034,7 @@ impl Render for Customize {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(22.))
+            .p(theme::sp(22.))
             .child(page_head(
                 "Click any input to remap it. The Hypershift keypad below edits the secondary \
                  layer held under your thumb.",
@@ -1018,7 +1044,7 @@ impl Render for Customize {
                     .flex()
                     .flex_1()
                     .min_h_0()
-                    .gap(px(WORK_GAP))
+                    .gap(theme::sp(WORK_GAP))
                     // The two stacked boards are taller than the window, so the
                     // stage column scrolls instead of the whole screen.
                     .child(
@@ -1029,7 +1055,7 @@ impl Render for Customize {
                             .overflow_y_scroll()
                             .child(stage),
                     )
-                    .child(div().flex_none().w(px(INSPECTOR_W)).child(inspector)),
+                    .child(div().flex_none().w(theme::sp(INSPECTOR_W)).child(inspector)),
             )
             // Click-away for the picker / name dropdown, deferred so it sits
             // above the page but below the panel itself (priority 2).
@@ -1067,9 +1093,9 @@ fn field(label: &str, mono: &SharedString, body: impl IntoElement) -> impl IntoE
         .flex_col()
         .child(
             div()
-                .mb(px(7.))
+                .mb(theme::sp(7.))
                 .font_family(mono.clone())
-                .text_size(px(10.))
+                .text_size(theme::sp(10.))
                 .text_color(theme::mute())
                 .child(label.to_uppercase()),
         )
@@ -1080,7 +1106,7 @@ fn field(label: &str, mono: &SharedString, body: impl IntoElement) -> impl IntoE
 fn field_value(text: String, mono: &SharedString) -> impl IntoElement {
     div()
         .font_family(mono.clone())
-        .text_size(px(13.))
+        .text_size(theme::sp(13.))
         .text_color(theme::ink())
         .child(text)
 }
@@ -1089,7 +1115,7 @@ fn field_value(text: String, mono: &SharedString) -> impl IntoElement {
 fn field_note(text: &'static str, mono: &SharedString) -> AnyElement {
     div()
         .font_family(mono.clone())
-        .text_size(px(13.))
+        .text_size(theme::sp(13.))
         .text_color(theme::mute())
         .child(text)
         .into_any_element()
@@ -1102,14 +1128,14 @@ fn empty_panel() -> Div {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(8.))
-        .h(px(220.))
-        .rounded(px(theme::RADIUS))
+        .gap(theme::sp(8.))
+        .h(theme::sp(220.))
+        .rounded(theme::sp(theme::RADIUS))
         .border_1()
         .border_dashed()
         .border_color(theme::line())
         .text_center()
-        .text_size(px(12.5))
+        .text_size(theme::sp(12.5))
         .text_color(theme::mute())
 }
 
@@ -1117,12 +1143,12 @@ fn empty_panel() -> Div {
 fn big_glyph(glyph: &'static str, mono: &SharedString) -> impl IntoElement {
     div()
         .font_family(mono.clone())
-        .text_size(px(22.))
+        .text_size(theme::sp(22.))
         .opacity(0.5)
         .child(glyph)
 }
 
 /// A hairline rule between editor sections (`.divider`).
 fn divider() -> impl IntoElement {
-    div().h(px(1.)).bg(theme::line_soft())
+    div().h(theme::sp(1.)).bg(theme::line_soft())
 }

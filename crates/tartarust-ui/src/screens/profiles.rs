@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, AsyncApp, ClickEvent, Context, Entity, FontWeight, MouseButton, Rgba,
-    SharedString, Subscription, Window, deferred, div, px, rgba,
+    SharedString, Subscription, Window, deferred, div, rgba,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use tartarust_ipc::bundle::ImportSource;
@@ -497,7 +497,7 @@ impl Profiles {
             // No dedicated idle-dot widget: a small muted dot keeps the status
             // column aligned without pretending to be an annunciator.
             div()
-                .size(px(7.))
+                .size(theme::sp(7.))
                 .rounded_full()
                 .bg(theme::mute())
                 .opacity(0.6)
@@ -509,19 +509,19 @@ impl Profiles {
         let name_cell = match editing {
             Some(edit) => div()
                 .flex_1()
-                .min_w(px(0.))
+                .min_w(theme::sp(0.))
                 .child(Input::new(&edit.input))
                 .into_any_element(),
             None => div()
                 .id(("prof-name", i))
                 .flex_1()
-                .min_w(px(0.))
-                .px(px(8.))
-                .py(px(6.))
-                .rounded(px(theme::RADIUS_SM))
+                .min_w(theme::sp(0.))
+                .px(theme::sp(8.))
+                .py(theme::sp(6.))
+                .rounded(theme::sp(theme::RADIUS_SM))
                 .border_1()
                 .border_color(gpui::transparent_black())
-                .text_size(px(13.5))
+                .text_size(theme::sp(13.5))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::ink())
                 .truncate()
@@ -543,17 +543,17 @@ impl Profiles {
             (None, Some(app)) if ctx.auto_switch => {
                 let clear_name = name.clone();
                 link_chip(("prof-link", i), &ctx.mono)
-                    .child(div().text_size(px(11.)).child("◆"))
+                    .child(div().text_size(theme::sp(11.)).child("◆"))
                     .child(div().truncate().child(app))
                     .child(
                         div()
                             .id(("prof-link-x", i))
                             .flex_none()
-                            .size(px(14.))
+                            .size(theme::sp(14.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.))
+                            .rounded(theme::sp(3.))
                             .text_color(theme::mute())
                             .hover(|s| s.bg(theme::red_wash()).text_color(theme::red()))
                             .cursor_pointer()
@@ -568,7 +568,7 @@ impl Profiles {
                 .opacity(0.45)
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_auto_switch(true, cx)))
-                .child(div().text_size(px(11.)).child("◆"))
+                .child(div().text_size(theme::sp(11.)).child("◆"))
                 .child(div().truncate().child(app))
                 .into_any_element(),
             // No link: a ghost "+ Link app…" button.
@@ -608,14 +608,14 @@ impl Profiles {
 
         let menu = div()
             .absolute()
-            .top(px(36.))
-            .right(px(0.))
-            .w(px(210.))
+            .top(theme::sp(36.))
+            .right(theme::sp(0.))
+            .w(theme::sp(210.))
             .flex()
             .flex_col()
-            .gap(px(1.))
-            .p(px(5.))
-            .rounded(px(theme::RADIUS))
+            .gap(theme::sp(1.))
+            .p(theme::sp(5.))
+            .rounded(theme::sp(theme::RADIUS))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
@@ -677,7 +677,13 @@ impl Profiles {
                     this.open_name_edit(i, window, cx)
                 }),
             ))
-            .child(div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(theme::line_soft()))
+            .child(
+                div()
+                    .h(theme::sp(1.))
+                    .mx(theme::sp(6.))
+                    .my(theme::sp(4.))
+                    .bg(theme::line_soft()),
+            )
             .child(menu_item(
                 ("prof-menu-delete", i),
                 "Delete",
@@ -693,9 +699,9 @@ impl Profiles {
             .when(!can_delete, |el| {
                 el.child(
                     div()
-                        .px(px(10.))
-                        .pb(px(4.))
-                        .text_size(px(10.))
+                        .px(theme::sp(10.))
+                        .pb(theme::sp(4.))
+                        .text_size(theme::sp(10.))
                         .text_color(theme::mute())
                         .child(delete_note),
                 )
@@ -707,12 +713,12 @@ impl Profiles {
             .child(
                 div()
                     .id(("prof-kebab", i))
-                    .size(px(30.))
+                    .size(theme::sp(30.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(theme::RADIUS_SM))
-                    .text_size(px(16.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
+                    .text_size(theme::sp(16.))
                     .text_color(theme::mute())
                     .hover(|s| s.bg(theme::panel_2()).text_color(theme::ink()))
                     .cursor_pointer()
@@ -742,10 +748,10 @@ impl Profiles {
         div()
             .flex()
             .items_center()
-            .gap(px(14.))
-            .px(px(13.))
-            .py(px(11.))
-            .rounded(px(theme::RADIUS_SM))
+            .gap(theme::sp(14.))
+            .px(theme::sp(13.))
+            .py(theme::sp(11.))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .bg(background)
             .border_1()
             .border_color(border)
@@ -754,9 +760,9 @@ impl Profiles {
             .when(!is_active && !is_default, |el| {
                 el.hover(|s| s.bg(theme::panel_1()).border_color(theme::line()))
             })
-            .child(div().flex_none().w(px(72.)).child(status))
+            .child(div().flex_none().w(theme::sp(72.)).child(status))
             .child(name_cell)
-            .child(div().flex_none().w(px(200.)).child(link_cell))
+            .child(div().flex_none().w(theme::sp(200.)).child(link_cell))
             .child(kebab)
             .into_any_element()
     }
@@ -791,22 +797,22 @@ impl Profiles {
         let busy = self.io_busy;
 
         let body = card()
-            .w(px(480.))
-            .p(px(18.))
+            .w(theme::sp(480.))
+            .p(theme::sp(18.))
             .border_color(theme::line())
             .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
                     .font_family(mono)
-                    .text_size(px(12.))
+                    .text_size(theme::sp(12.))
                     .text_color(theme::ink())
                     .child(title),
             )
             .child(
                 div()
-                    .text_size(px(12.))
-                    .line_height(px(18.))
+                    .text_size(theme::sp(12.))
+                    .line_height(theme::sp(18.))
                     .text_color(theme::dim())
                     .child(sub),
             )
@@ -829,8 +835,8 @@ impl Profiles {
             .when_some(self.io_error.clone(), |el, err| {
                 el.child(
                     div()
-                        .text_size(px(12.))
-                        .line_height(px(18.))
+                        .text_size(theme::sp(12.))
+                        .line_height(theme::sp(18.))
                         .text_color(theme::red())
                         .child(err),
                 )
@@ -839,8 +845,8 @@ impl Profiles {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.))
-                    .pt(px(2.))
+                    .gap(theme::sp(8.))
+                    .pt(theme::sp(2.))
                     .child(btn_ghost(
                         "dialog-cancel",
                         "Cancel",
@@ -903,9 +909,9 @@ impl Render for Profiles {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(14.))
-            .min_h(px(44.))
-            .px(px(4.))
+            .gap(theme::sp(14.))
+            .min_h(theme::sp(44.))
+            .px(theme::sp(4.))
             .child(div().flex_none().child(switch_row(
                 "prof-auto-switch",
                 "Auto-switch by focused app",
@@ -939,7 +945,7 @@ impl Render for Profiles {
             .id("profile-list")
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(theme::sp(8.))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -955,13 +961,13 @@ impl Render for Profiles {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(22.))
+            .p(theme::sp(22.))
             .child(page_head(
                 "Per-profile key bindings, calibration, and lighting. A profile activates \
                  automatically when its linked application comes into focus.",
             ))
             .child(toolbar)
-            .child(div().h(px(14.)).flex_none())
+            .child(div().h(theme::sp(14.)).flex_none())
             .child(list)
             // The kebab menus' click-away catcher, deferred so it sits above the
             // rows but below the menu itself (priority 2).
@@ -992,12 +998,12 @@ impl Render for Profiles {
 fn badge(text: &'static str, ink: Rgba, bg: Rgba, mono: &SharedString) -> gpui::Div {
     div()
         .flex_none()
-        .px(px(7.))
-        .py(px(3.))
-        .rounded(px(3.))
+        .px(theme::sp(7.))
+        .py(theme::sp(3.))
+        .rounded(theme::sp(3.))
         .bg(bg)
         .font_family(mono.clone())
-        .text_size(px(9.5))
+        .text_size(theme::sp(9.5))
         .text_color(ink)
         .child(text)
 }
@@ -1006,7 +1012,7 @@ fn badge(text: &'static str, ink: Rgba, bg: Rgba, mono: &SharedString) -> gpui::
 fn meta(text: impl Into<SharedString>, mono: &SharedString) -> gpui::Div {
     div()
         .font_family(mono.clone())
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::mute())
         .child(text.into())
 }
@@ -1018,15 +1024,15 @@ fn link_chip(id: (&'static str, usize), mono: &SharedString) -> gpui::Stateful<g
         .id(id)
         .flex()
         .items_center()
-        .gap(px(6.))
-        .px(px(9.))
-        .py(px(4.))
-        .rounded(px(theme::RADIUS_SM))
+        .gap(theme::sp(6.))
+        .px(theme::sp(9.))
+        .py(theme::sp(4.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .bg(theme::panel_1())
         .border_1()
         .border_color(theme::line())
         .font_family(mono.clone())
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::dim())
 }
 
@@ -1036,13 +1042,13 @@ fn link_add(id: (&'static str, usize)) -> gpui::Stateful<gpui::Div> {
         .id(id)
         .flex()
         .items_center()
-        .px(px(10.))
-        .py(px(4.))
-        .rounded(px(theme::RADIUS_SM))
+        .px(theme::sp(10.))
+        .py(theme::sp(4.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .border_1()
         .border_dashed()
         .border_color(theme::line())
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::dim())
         .cursor_pointer()
@@ -1066,10 +1072,10 @@ fn menu_item(
         .id(id)
         .flex()
         .items_center()
-        .px(px(10.))
-        .py(px(8.))
-        .rounded(px(theme::RADIUS_SM))
-        .text_size(px(12.5))
+        .px(theme::sp(10.))
+        .py(theme::sp(8.))
+        .rounded(theme::sp(theme::RADIUS_SM))
+        .text_size(theme::sp(12.5))
         .font_weight(FontWeight::MEDIUM)
         .text_color(ink)
         .when(enabled, |el| {

@@ -27,7 +27,7 @@ use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Background, Div, ElementId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Rgba, SharedString, Stateful, Window, div, linear_color_stop, linear_gradient,
-    px, rgb,
+    rgb,
 };
 
 use crate::model::{
@@ -337,13 +337,13 @@ impl RenderOnce for Keypad {
             rows.push(
                 div()
                     .flex()
-                    .gap(px(GAP))
+                    .gap(theme::sp(GAP))
                     .justify_start()
                     .children(caps)
                     .into_any_element(),
             );
         }
-        let main_block = div().flex().flex_col().gap(px(GAP)).children(rows);
+        let main_block = div().flex().flex_col().gap(theme::sp(GAP)).children(rows);
 
         // Thumb cluster: 8-way pad, scroll wheel, spacebar, thumb button. In
         // `analog_only` mode (Calibration) only the spacebar — the one analog cap
@@ -354,7 +354,7 @@ impl RenderOnce for Keypad {
         let side = div()
             .flex()
             .flex_col()
-            .gap(px(SIDE_ROW_GAP))
+            .gap(theme::sp(SIDE_ROW_GAP))
             .items_center()
             .when(!self.analog_only, |el| {
                 el.child(self.thumbpad(&mono)).child(self.wheel(&mono))
@@ -366,7 +366,7 @@ impl RenderOnce for Keypad {
         // drops BELOW the grid (a column) instead of leaving a dead right bay.
         let board = div()
             .flex()
-            .gap(px(SIDE_GAP))
+            .gap(theme::sp(SIDE_GAP))
             .when(self.analog_only, |el| el.flex_col().items_center())
             .when(!self.analog_only, |el| el.items_start().justify_center())
             .child(main_block)
@@ -380,24 +380,29 @@ impl RenderOnce for Keypad {
                 .flex()
                 .flex_col()
                 .items_center()
-                .pt(px(DECK_PT))
-                .px(px(DECK_PX))
-                .pb(px(DECK_PB))
-                .rounded(px(12.))
+                .pt(theme::sp(DECK_PT))
+                .px(theme::sp(DECK_PX))
+                .pb(theme::sp(DECK_PB))
+                .rounded(theme::sp(12.))
                 .bg(plate_face())
                 .border_1()
                 .border_color(theme::line())
                 .shadow_lg()
                 .child(board)
                 .child(
-                    div().w_full().flex().justify_end().mt(px(10.)).child(
-                        div()
-                            .font_family(mono)
-                            .text_size(px(ENGRAVE_SIZE))
-                            .text_color(theme::mute())
-                            .opacity(0.75)
-                            .child("TARTARUS PRO · USB 1532:0244"),
-                    ),
+                    div()
+                        .w_full()
+                        .flex()
+                        .justify_end()
+                        .mt(theme::sp(10.))
+                        .child(
+                            div()
+                                .font_family(mono)
+                                .text_size(theme::sp(ENGRAVE_SIZE))
+                                .text_color(theme::mute())
+                                .opacity(0.75)
+                                .child("TARTARUS PRO · USB 1532:0244"),
+                        ),
                 ),
         )
     }
@@ -483,8 +488,8 @@ impl Keypad {
         let multi = self.multi_selected.contains(&key);
 
         let cap = cap_shell(self.el_id("kp-cap", key_slot(key)), selected, multi)
-            .w(px(CAP))
-            .h(px(CAP))
+            .w(theme::sp(CAP))
+            .h(theme::sp(CAP))
             .when_some(look.face, |el, face| el.bg(face));
 
         self.wire(cap, key)
@@ -515,8 +520,8 @@ impl Keypad {
 
         div()
             .relative()
-            .w(px(THUMB_BOX))
-            .h(px(THUMB_BOX))
+            .w(theme::sp(THUMB_BOX))
+            .h(theme::sp(THUMB_BOX))
             .children(caps)
             .child(self.hub(four, mono))
             .into_any_element()
@@ -563,11 +568,11 @@ impl Keypad {
 
         let cap = cap_shell(self.el_id("kp-dir", key_slot(key)), selected, false)
             .absolute()
-            .left(px(THUMB_BOX * left / 100.0))
-            .top(px(THUMB_BOX * top / 100.0))
-            .size(px(DIR_CAP))
+            .left(theme::sp(THUMB_BOX * left / 100.0))
+            .top(theme::sp(THUMB_BOX * top / 100.0))
+            .size(theme::sp(DIR_CAP))
             .font_family(mono.clone())
-            .text_size(px(DIR_SIZE))
+            .text_size(theme::sp(DIR_SIZE))
             .font_weight(gpui::FontWeight::SEMIBOLD)
             .text_color(ink)
             .when_some(lit.map(|(face, _)| face), |el, face| el.bg(face));
@@ -588,9 +593,9 @@ impl Keypad {
             // arithmetic — GPUI has no `transform: translate(-50%, -50%)`.
             return div()
                 .absolute()
-                .left(px((THUMB_BOX - DIR_CAP) / 2.0))
-                .top(px((THUMB_BOX - DIR_CAP) / 2.0))
-                .size(px(DIR_CAP))
+                .left(theme::sp((THUMB_BOX - DIR_CAP) / 2.0))
+                .top(theme::sp((THUMB_BOX - DIR_CAP) / 2.0))
+                .size(theme::sp(DIR_CAP))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -600,7 +605,7 @@ impl Keypad {
                 .border_dashed()
                 .border_color(theme::line())
                 .font_family(mono.clone())
-                .text_size(px(HUB_SIZE))
+                .text_size(theme::sp(HUB_SIZE))
                 .text_color(theme::mute())
                 .child(label)
                 .into_any_element();
@@ -616,17 +621,17 @@ impl Keypad {
         div()
             .id(self.el_id("kp-hub", 0))
             .absolute()
-            .left(px((THUMB_BOX - HUB_W) / 2.0))
-            .top(px((THUMB_BOX - HUB_H) / 2.0))
-            .w(px(HUB_W))
-            .h(px(HUB_H))
+            .left(theme::sp((THUMB_BOX - HUB_W) / 2.0))
+            .top(theme::sp((THUMB_BOX - HUB_H) / 2.0))
+            .w(theme::sp(HUB_W))
+            .h(theme::sp(HUB_H))
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(theme::RADIUS_SM))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .border_1()
             .font_family(mono.clone())
-            .text_size(px(HUB_TOGGLE_SIZE))
+            .text_size(theme::sp(HUB_TOGGLE_SIZE))
             .font_weight(gpui::FontWeight::BOLD)
             .when(four, |el| {
                 el.bg(theme::rust())
@@ -664,15 +669,15 @@ impl Keypad {
             .flex()
             .items_center()
             .justify_around()
-            .w(px(WHEEL_W))
-            .h(px(WHEEL_H))
+            .w(theme::sp(WHEEL_W))
+            .h(theme::sp(WHEEL_H))
             .rounded_full()
             .bg(cap_face())
             .border_1()
             .border_color(theme::line())
             .shadow_sm()
             .font_family(mono.clone())
-            .text_size(px(WHEEL_SIZE))
+            .text_size(theme::sp(WHEEL_SIZE))
             .when_some(lit.map(|(face, _)| face), |el, face| el.bg(face))
             .child(self.wheel_seg(up, "▲", lit.map(|(_, ink)| ink)))
             .child(self.wheel_seg(down, "▼", lit.map(|(_, ink)| ink)))
@@ -691,9 +696,9 @@ impl Keypad {
         let layer = self.layer;
         div()
             .id(self.el_id("kp-wseg", key_slot(key)))
-            .px(px(6.))
-            .py(px(4.))
-            .rounded(px(theme::RADIUS_SM))
+            .px(theme::sp(6.))
+            .py(theme::sp(4.))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .text_color(match (selected, lit_ink) {
                 (true, _) => theme::rust(),
                 (_, Some(ink)) => ink,
@@ -725,10 +730,10 @@ impl Keypad {
             .then(|| lit_face_style(&lit_color(&self.lighting, key)));
 
         let bar = cap_shell(self.el_id("kp-space", key_slot(key)), selected, multi)
-            .w(px(THUMB_BOX))
-            .h(px(DIR_CAP))
+            .w(theme::sp(THUMB_BOX))
+            .h(theme::sp(DIR_CAP))
             .font_family(mono.clone())
-            .text_size(px(BAR_SIZE))
+            .text_size(theme::sp(BAR_SIZE))
             .text_color(match (selected, lit) {
                 (true, _) => theme::ink(),
                 (_, Some((_, ink))) => ink,
@@ -784,10 +789,10 @@ impl Keypad {
             .then(|| lit_face_style(&lit_color(&self.lighting, key)));
 
         let disc = cap_shell(self.el_id("kp-tbtn", key_slot(key)), selected, false)
-            .size(px(THUMB_BTN))
+            .size(theme::sp(THUMB_BTN))
             .rounded_full()
             .font_family(mono.clone())
-            .text_size(px(BAR_SIZE))
+            .text_size(theme::sp(BAR_SIZE))
             .text_color(match (selected, disabled, lit) {
                 (_, true, _) => theme::mute(),
                 (true, _, _) => theme::ink(),
@@ -801,7 +806,7 @@ impl Keypad {
             .child(
                 // The disc's label truncates so a bound value can't spill out.
                 div()
-                    .max_w(px(THUMB_BTN - 12.0))
+                    .max_w(theme::sp(THUMB_BTN - 12.0))
                     .truncate()
                     .when(disabled, |el| el.line_through())
                     .child(label),
@@ -933,7 +938,7 @@ fn cap_shell(id: ElementId, selected: bool, multi: bool) -> Stateful<Div> {
         .flex_col()
         .items_center()
         .justify_center()
-        .rounded(px(CAP_R))
+        .rounded(theme::sp(CAP_R))
         .bg(cap_face())
         .border_1()
         .border_color(cap_border(selected, multi))
@@ -951,7 +956,7 @@ fn multi_wash(radius: f32) -> impl IntoElement {
     div()
         .absolute()
         .inset_0()
-        .rounded(px(radius))
+        .rounded(theme::sp(radius))
         .bg(theme::rust_wash())
 }
 
@@ -965,8 +970,8 @@ fn pressure_fill(v: u8, height: f32, radius: f32) -> impl IntoElement {
         .left_0()
         .right_0()
         .bottom_0()
-        .h(px(height * v as f32 / 255.0))
-        .rounded(px(radius))
+        .h(theme::sp(height * v as f32 / 255.0))
+        .rounded(theme::sp(radius))
         .bg(linear_gradient(
             0.,
             linear_color_stop(theme::live(), 0.),
@@ -980,9 +985,9 @@ fn pressure_fill(v: u8, height: f32, radius: f32) -> impl IntoElement {
 fn cal_dot() -> impl IntoElement {
     div()
         .absolute()
-        .top(px(5.))
-        .right(px(5.))
-        .size(px(5.))
+        .top(theme::sp(5.))
+        .right(theme::sp(5.))
+        .size(theme::sp(5.))
         .rounded_full()
         .bg(theme::amber())
 }
@@ -991,7 +996,7 @@ fn cal_dot() -> impl IntoElement {
 fn cap_legend(look: &CapLook, mono: &SharedString, size: f32) -> impl IntoElement {
     div()
         .font_family(mono.clone())
-        .text_size(px(size))
+        .text_size(theme::sp(size))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(if look.disabled {
             theme::mute()
@@ -1006,11 +1011,11 @@ fn cap_legend(look: &CapLook, mono: &SharedString, size: f32) -> impl IntoElemen
 /// selection), single-line and ellipsised so a long bind never overflows the cap.
 fn cap_func(func: &str, selected: bool, mono: &SharedString, max_w: f32) -> impl IntoElement {
     div()
-        .mt(px(3.))
-        .max_w(px(max_w))
+        .mt(theme::sp(3.))
+        .max_w(theme::sp(max_w))
         .truncate()
         .font_family(mono.clone())
-        .text_size(px(FUNC_SIZE))
+        .text_size(theme::sp(FUNC_SIZE))
         .text_color(if selected {
             theme::rust()
         } else {

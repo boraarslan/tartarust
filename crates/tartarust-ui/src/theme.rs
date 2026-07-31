@@ -9,7 +9,17 @@
 //!   red   #D0574C  destructive, macro record
 //! Nothing is colored for decoration; there are no glows except actual LEDs.
 
-use gpui::{App, Global, Rgba, SharedString, rgb, rgba};
+use gpui::{App, Global, Pixels, Rgba, SharedString, px, rgb, rgba};
+
+/// Global UI scale. Every dimension in the UI goes through [`sp`] ("scaled
+/// pixels"), so density is tuned in exactly one place. 1.5 per user review of
+/// the 1.0 port — the CSS-era sizes read too small outside a webview.
+pub const SCALE: f32 = 1.5;
+
+/// A scaled logical dimension: `sp(13.)` = 13 design-px at the global scale.
+pub fn sp(v: f32) -> Pixels {
+    px(v * SCALE)
+}
 
 // --- Surfaces ----------------------------------------------------------------
 

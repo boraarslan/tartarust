@@ -21,7 +21,7 @@
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, KeyDownEvent, SharedString, Window,
-    div, px,
+    div,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -134,10 +134,10 @@ impl Render for KeyPicker {
 
         let list = if filtered.is_empty() {
             div()
-                .px(px(12.))
-                .py(px(22.))
+                .px(theme::sp(12.))
+                .py(theme::sp(22.))
                 .text_center()
-                .text_size(px(12.))
+                .text_size(theme::sp(12.))
                 .text_color(theme::mute())
                 .child("No keys match")
                 .into_any_element()
@@ -165,11 +165,11 @@ impl Render for KeyPicker {
         };
 
         div()
-            .w(px(280.))
-            .max_h(px(340.))
+            .w(theme::sp(280.))
+            .max_h(theme::sp(340.))
             .flex()
             .flex_col()
-            .rounded(px(theme::RADIUS))
+            .rounded(theme::sp(theme::RADIUS))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
@@ -185,14 +185,19 @@ impl Render for KeyPicker {
                     _ => {}
                 },
             ))
-            .child(div().flex_none().m(px(8.)).child(Input::new(&self.search)))
+            .child(
+                div()
+                    .flex_none()
+                    .m(theme::sp(8.))
+                    .child(Input::new(&self.search)),
+            )
             .child(
                 div()
                     .id("kp-list")
                     .flex_1()
                     .overflow_y_scroll()
-                    .px(px(4.))
-                    .pb(px(6.))
+                    .px(theme::sp(4.))
+                    .pb(theme::sp(6.))
                     .child(list),
             )
     }
@@ -212,15 +217,15 @@ fn flush_group(
     let rows = std::mem::take(group);
     groups.push(
         div()
-            .pt(px(2.))
+            .pt(theme::sp(2.))
             .child(
                 div()
-                    .px(px(9.))
-                    .pt(px(7.))
-                    .pb(px(5.))
+                    .px(theme::sp(9.))
+                    .pt(theme::sp(7.))
+                    .pb(theme::sp(5.))
                     .bg(theme::panel_1())
                     .font_family(mono.clone())
-                    .text_size(px(9.5))
+                    .text_size(theme::sp(9.5))
                     .text_color(theme::mute())
                     .child(head.to_uppercase()),
             )
@@ -243,11 +248,11 @@ fn entry_row(
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(10.))
-        .px(px(9.))
-        .py(px(7.))
-        .rounded(px(theme::RADIUS_SM))
-        .text_size(px(12.5))
+        .gap(theme::sp(10.))
+        .px(theme::sp(9.))
+        .py(theme::sp(7.))
+        .rounded(theme::sp(theme::RADIUS_SM))
+        .text_size(theme::sp(12.5))
         .text_color(if highlighted {
             theme::ink()
         } else {
@@ -271,7 +276,7 @@ fn entry_row(
         .child(
             div()
                 .flex_none()
-                .text_size(px(10.5))
+                .text_size(theme::sp(10.5))
                 .text_color(theme::mute())
                 .child(evdev),
         )
@@ -301,15 +306,15 @@ pub fn key_picker_trigger(
         .w_full()
         .items_center()
         .justify_between()
-        .gap(px(8.))
-        .px(px(11.))
-        .py(px(9.))
-        .rounded(px(theme::RADIUS_SM))
+        .gap(theme::sp(8.))
+        .px(theme::sp(11.))
+        .py(theme::sp(9.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .bg(theme::panel_1())
         .border_1()
         .border_color(theme::line())
         .font_family(mono)
-        .text_size(px(12.5))
+        .text_size(theme::sp(12.5))
         .text_color(theme::ink())
         .hover(|s| s.bg(theme::panel_2()).border_color(theme::mute()))
         .cursor_pointer()

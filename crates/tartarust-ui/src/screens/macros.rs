@@ -15,7 +15,7 @@
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, FontWeight, MouseButton, Rgba, SharedString,
-    Window, deferred, div, px, rgba,
+    Window, deferred, div, rgba,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 
@@ -121,25 +121,25 @@ fn card_head(mono: &SharedString) -> gpui::Div {
         .flex()
         .items_center()
         .justify_between()
-        .gap(px(10.))
+        .gap(theme::sp(10.))
         .font_family(mono.clone())
-        .text_size(px(10.))
+        .text_size(theme::sp(10.))
         .text_color(theme::mute())
 }
 
 /// The quiet in-card note the empty and loading states use (`.li-meta`).
 fn hint(text: impl Into<SharedString>, mono: &SharedString) -> gpui::Div {
     div()
-        .py(px(8.))
-        .px(px(2.))
+        .py(theme::sp(8.))
+        .px(theme::sp(2.))
         .font_family(mono.clone())
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::mute())
         .child(text.into())
 }
 
 fn divider() -> gpui::Div {
-    div().flex_none().h(px(1.)).bg(theme::line_soft())
+    div().flex_none().h(theme::sp(1.)).bg(theme::line_soft())
 }
 
 /// The ✕ affordance shared by rail rows and step chips. Its mouse-down stops
@@ -151,12 +151,12 @@ fn chip_x(
     div()
         .id(id)
         .flex_none()
-        .size(px(15.))
+        .size(theme::sp(15.))
         .flex()
         .items_center()
         .justify_center()
-        .rounded(px(3.))
-        .text_size(px(12.))
+        .rounded(theme::sp(3.))
+        .text_size(theme::sp(12.))
         .text_color(theme::mute())
         .hover(|s| s.bg(theme::red_wash()).text_color(theme::red()))
         .cursor_pointer()
@@ -624,8 +624,8 @@ impl Macros {
         deferred(
             div()
                 .absolute()
-                .top(px(38.))
-                .left(px(0.))
+                .top(theme::sp(38.))
+                .left(theme::sp(0.))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(self.picker.clone()),
         )
@@ -654,10 +654,10 @@ impl Macros {
             .id(("macro-row", i))
             .flex()
             .items_center()
-            .gap(px(12.))
-            .px(px(13.))
-            .py(px(12.))
-            .rounded(px(theme::RADIUS_SM))
+            .gap(theme::sp(12.))
+            .px(theme::sp(13.))
+            .py(theme::sp(12.))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .bg(if is_active {
                 theme::rust_wash()
             } else {
@@ -679,10 +679,10 @@ impl Macros {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(theme::sp(0.))
                     .child(
                         div()
-                            .text_size(px(13.))
+                            .text_size(theme::sp(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme::ink())
                             .truncate()
@@ -690,9 +690,9 @@ impl Macros {
                     )
                     .child(
                         div()
-                            .pt(px(2.))
+                            .pt(theme::sp(2.))
                             .font_family(mono.clone())
-                            .text_size(px(11.))
+                            .text_size(theme::sp(11.))
                             .text_color(theme::mute())
                             .child(format!("{steps} steps")),
                     ),
@@ -714,8 +714,8 @@ impl Macros {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .min_w(theme::sp(0.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .border_1()
                     .border_color(gpui::transparent_black())
                     .hover(|s| s.border_color(theme::line_soft()))
@@ -725,7 +725,7 @@ impl Macros {
                     .child(
                         Input::new(&self.name_input)
                             .appearance(false)
-                            .text_size(px(13.5)),
+                            .text_size(theme::sp(13.5)),
                     ),
             )
             .child(
@@ -743,10 +743,10 @@ impl Macros {
         div()
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
-            .py(px(9.))
-            .rounded(px(theme::RADIUS_SM))
+            .gap(theme::sp(10.))
+            .px(theme::sp(12.))
+            .py(theme::sp(9.))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .bg(theme::panel_0())
             .border_1()
             .border_color(theme::line_soft())
@@ -776,7 +776,7 @@ impl Macros {
         div()
             .relative()
             .flex_none()
-            .w(px(124.))
+            .w(theme::sp(124.))
             .child(key_picker_trigger(
                 ("macro-add", slot),
                 "",
@@ -811,30 +811,30 @@ impl Macros {
             .relative()
             .flex()
             .items_center()
-            .gap(px(7.))
-            .px(px(skin.pad_x))
-            .py(px(skin.pad_y))
-            .rounded(px(theme::RADIUS_SM))
+            .gap(theme::sp(7.))
+            .px(theme::sp(skin.pad_x))
+            .py(theme::sp(skin.pad_y))
+            .rounded(theme::sp(theme::RADIUS_SM))
             .bg(skin.bg)
             .border_1()
             // Edit mode takes the rust border. The CSS also painted a 1px ring
             // outside it, which has no GPUI equivalent.
             .border_color(if editing { theme::rust() } else { skin.border })
             .font_family(mono.clone())
-            .text_size(px(skin.text))
+            .text_size(theme::sp(skin.text))
             .text_color(skin.ink)
             .cursor_pointer()
             .child(
                 div()
                     .flex_none()
-                    .min_w(px(16.))
-                    .h(px(16.))
+                    .min_w(theme::sp(16.))
+                    .h(theme::sp(16.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(3.))
+                    .rounded(theme::sp(3.))
                     .bg(skin.num_bg)
-                    .text_size(px(10.))
+                    .text_size(theme::sp(10.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(skin.num_ink)
                     .child((index + 1).to_string()),
@@ -851,13 +851,13 @@ impl Macros {
             // DELAY in edit mode — the ms field, committed on Enter or blur.
             (true, MacroStep::Delay { .. }) => chip
                 .child(
-                    div().w(px(64.)).child(
+                    div().w(theme::sp(64.)).child(
                         Input::new(&self.delay_input)
                             .appearance(false)
-                            .h(px(16.))
-                            .px(px(0.))
-                            .py(px(0.))
-                            .text_size(px(skin.text)),
+                            .h(theme::sp(16.))
+                            .px(theme::sp(0.))
+                            .py(theme::sp(0.))
+                            .text_size(theme::sp(skin.text)),
                     ),
                 )
                 .child(div().child("ms"))
@@ -865,15 +865,20 @@ impl Macros {
                 .into_any_element(),
             // PRESS / RELEASE in edit mode — re-pick the key.
             (true, MacroStep::Press { key } | MacroStep::Release { key }) => chip
-                .child(div().flex_none().w(px(150.)).child(key_picker_trigger(
-                    ("macro-step-key", index),
-                    key,
-                    None,
-                    mono.clone(),
-                    cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open_picker(PickTarget::Step(index), window, cx)
-                    }),
-                )))
+                .child(
+                    div()
+                        .flex_none()
+                        .w(theme::sp(150.))
+                        .child(key_picker_trigger(
+                            ("macro-step-key", index),
+                            key,
+                            None,
+                            mono.clone(),
+                            cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.open_picker(PickTarget::Step(index), window, cx)
+                            }),
+                        )),
+                )
                 .child(remove)
                 .when(self.picking == Some(PickTarget::Step(index)), |el| {
                     el.child(self.picker_panel())
@@ -913,7 +918,7 @@ impl Render for Macros {
         // --- LEFT: the narrow macro name rail -------------------------------
         let rail = card()
             .flex_none()
-            .w(px(230.))
+            .w(theme::sp(230.))
             .child(card_head(&mono).child("MACROS"))
             .child(if macros.is_empty() {
                 hint("No macros yet.", &mono).into_any_element()
@@ -921,7 +926,7 @@ impl Render for Macros {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(theme::sp(6.))
                     .children(
                         macros
                             .iter()
@@ -938,7 +943,7 @@ impl Render for Macros {
             ));
 
         // --- RIGHT: the chip-flow editor ------------------------------------
-        let editor = card().flex_1().min_w(px(0.));
+        let editor = card().flex_1().min_w(theme::sp(0.));
         let editor = match macros.get(sel) {
             None => editor
                 .child(card_head(&mono).child("EDITOR"))
@@ -967,7 +972,7 @@ impl Render for Macros {
                         .flex()
                         .flex_wrap()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(theme::sp(8.))
                         .children(
                             m.steps
                                 .iter()
@@ -983,7 +988,7 @@ impl Render for Macros {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(22.))
+            .p(theme::sp(22.))
             .child(page_head(
                 "Create and edit keystroke sequences that can be bound to any key.",
             ))
@@ -997,7 +1002,7 @@ impl Render for Macros {
                     .flex_1()
                     .min_h_0()
                     .items_start()
-                    .gap(px(22.))
+                    .gap(theme::sp(22.))
                     .overflow_y_scroll()
                     .child(rail)
                     .child(editor),

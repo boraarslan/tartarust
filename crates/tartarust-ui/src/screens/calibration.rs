@@ -45,7 +45,7 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Div, Entity, MouseButton, Rgba, SharedString, Task,
-    Window, deferred, div, linear_color_stop, linear_gradient, px, relative, rgb, rgba,
+    Window, deferred, div, linear_color_stop, linear_gradient, relative, rgb, rgba,
 };
 use gpui_component::slider::{SliderEvent, SliderState};
 
@@ -376,6 +376,7 @@ impl Calibration {
         seed_slider(&self.bulk_act_slider, 1.0, 255.0, self.bulk_act, cx);
         seed_slider(&self.bulk_rel_slider, 0.0, 254.0, self.bulk_rel, cx);
         self.edit_mode = true;
+        nudge_next_frame(cx);
     }
 
     /// The toolbar toggle: entering selects EVERY analog cap, exiting clears the
@@ -482,6 +483,7 @@ impl Calibration {
         seed_slider(&self.second_slider, 1.0, 255.0, edit.second_point, cx);
         self.edit = Some(edit);
         self.picker_open = false;
+        nudge_next_frame(cx);
     }
 
     /// Send the current edit state to the daemon, upholding the schema
@@ -684,8 +686,8 @@ impl Calibration {
             .flex()
             .items_center()
             .justify_end()
-            .gap(px(10.))
-            .pb(px(12.))
+            .gap(theme::sp(10.))
+            .pb(theme::sp(12.))
             .when(any_custom, |el| {
                 el.child(btn_ghost(
                     "cal-reset-all",
@@ -700,11 +702,11 @@ impl Calibration {
                 // here rather than widened for one call site.
                 div()
                     .id("cal-edit-toggle")
-                    .px(px(12.))
-                    .py(px(5.))
-                    .rounded(px(theme::RADIUS_SM))
+                    .px(theme::sp(12.))
+                    .py(theme::sp(5.))
+                    .rounded(theme::sp(theme::RADIUS_SM))
                     .border_1()
-                    .text_size(px(12.))
+                    .text_size(theme::sp(12.))
                     .when(on, |el| {
                         el.border_color(theme::rust()).text_color(theme::rust())
                     })
@@ -745,15 +747,15 @@ impl Calibration {
 
         div()
             .absolute()
-            .top(px(0.))
-            .when(open_left, |el| el.right(px(offset)))
-            .when(!open_left, |el| el.left(px(offset)))
-            .w(px(MODAL_W))
+            .top(theme::sp(0.))
+            .when(open_left, |el| el.right(theme::sp(offset)))
+            .when(!open_left, |el| el.left(theme::sp(offset)))
+            .w(theme::sp(MODAL_W))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(14.))
-            .rounded(px(theme::RADIUS))
+            .gap(theme::sp(12.))
+            .p(theme::sp(14.))
+            .rounded(theme::sp(theme::RADIUS))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
@@ -769,20 +771,20 @@ impl Calibration {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .gap(px(10.))
+                    .gap(theme::sp(10.))
                     .font_family(mono.clone())
-                    .text_size(px(12.5))
+                    .text_size(theme::sp(12.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(format!("{cap} · #{}", e.index))
                     .child(
                         div()
                             .id("cal-modal-close")
-                            .size(px(14.))
+                            .size(theme::sp(14.))
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(3.))
-                            .text_size(px(11.))
+                            .rounded(theme::sp(3.))
+                            .text_size(theme::sp(11.))
                             .text_color(theme::mute())
                             .hover(|s| s.bg(theme::red_wash()).text_color(theme::red()))
                             .cursor_pointer()
@@ -798,7 +800,7 @@ impl Calibration {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(theme::sp(6.))
                     .child(field_label("Live pressure"))
                     .child(press_bar(pressure, &marks))
                     .child(press_readout(pressure, mono)),
@@ -837,7 +839,7 @@ impl Calibration {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(theme::sp(6.))
                         .child(field_label("Second action (key)"))
                         // A searchable picker (the same one the Customize editor
                         // uses), not free-text evdev: it always yields a valid
@@ -905,15 +907,15 @@ impl Calibration {
         div()
             .id("cal-edit-panel")
             .absolute()
-            .top(px(PANEL_INSET))
-            .right(px(PANEL_INSET))
-            .bottom(px(PANEL_INSET))
-            .w(px(PANEL_W))
+            .top(theme::sp(PANEL_INSET))
+            .right(theme::sp(PANEL_INSET))
+            .bottom(theme::sp(PANEL_INSET))
+            .w(theme::sp(PANEL_W))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(18.))
-            .rounded(px(theme::RADIUS))
+            .gap(theme::sp(12.))
+            .p(theme::sp(18.))
+            .rounded(theme::sp(theme::RADIUS))
             .bg(theme::panel_1())
             .border_1()
             .border_color(theme::line())
@@ -923,7 +925,7 @@ impl Calibration {
             .child(
                 div()
                     .font_family(mono.clone())
-                    .text_size(px(12.5))
+                    .text_size(theme::sp(12.5))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(format!("Edit Mode · {selected} selected")),
             )
@@ -931,7 +933,7 @@ impl Calibration {
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(theme::sp(8.))
                     .child(btn_ghost(
                         "cal-clear-all",
                         "Clear all",
@@ -968,7 +970,7 @@ impl Calibration {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(theme::sp(6.))
                         .child(field_label("Live pressure (max of selection)"))
                         .child(press_bar(
                             live_max,
@@ -1104,10 +1106,10 @@ impl Render for Calibration {
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(28.))
-            .px(px(26.))
-            .pb(px(24.))
-            .rounded(px(8.))
+            .pt(theme::sp(28.))
+            .px(theme::sp(26.))
+            .pb(theme::sp(24.))
+            .rounded(theme::sp(8.))
             .bg(theme::panel_0())
             .border_1()
             .border_color(theme::line_soft())
@@ -1131,10 +1133,10 @@ impl Render for Calibration {
             .flex()
             .flex_col()
             .size_full()
-            .p(px(22.))
+            .p(theme::sp(22.))
             // While the drawer is open the page sits left of it, so the fixed
             // drawer never covers the toolbar.
-            .when(self.edit_mode, |el| el.pr(px(PANEL_SHIFT)))
+            .when(self.edit_mode, |el| el.pr(theme::sp(PANEL_SHIFT)))
             .child(page_head(
                 "Click a key to tune its analog actuation — drag or use Edit Mode to tune many \
                  at once.",
@@ -1177,20 +1179,20 @@ fn banner(icon: &'static str, head: &'static str, tail: &'static str, mono: &Sha
         .flex_none()
         .flex()
         .items_center()
-        .gap(px(12.))
-        .px(px(14.))
-        .py(px(11.))
-        .mb(px(18.))
-        .rounded(px(theme::RADIUS_SM))
+        .gap(theme::sp(12.))
+        .px(theme::sp(14.))
+        .py(theme::sp(11.))
+        .mb(theme::sp(18.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .bg(theme::amber_wash())
         .border_l_3()
         .border_color(theme::amber())
-        .text_size(px(12.5))
+        .text_size(theme::sp(12.5))
         .text_color(theme::amber())
         .child(
             div()
                 .font_family(mono.clone())
-                .text_size(px(15.))
+                .text_size(theme::sp(15.))
                 .child(icon),
         )
         .child(
@@ -1209,11 +1211,20 @@ fn banner(icon: &'static str, head: &'static str, tail: &'static str, mono: &Sha
 /// One L-shaped corner tick, like a bench-mat print (the stage's `::before` /
 /// `::after`): top-left, then bottom-right.
 fn corner_tick(top_left: bool) -> Div {
-    let base = div().absolute().size(px(11.)).border_color(theme::line());
+    let base = div()
+        .absolute()
+        .size(theme::sp(11.))
+        .border_color(theme::line());
     if top_left {
-        base.top(px(9.)).left(px(9.)).border_t_1().border_l_1()
+        base.top(theme::sp(9.))
+            .left(theme::sp(9.))
+            .border_t_1()
+            .border_l_1()
     } else {
-        base.bottom(px(9.)).right(px(9.)).border_b_1().border_r_1()
+        base.bottom(theme::sp(9.))
+            .right(theme::sp(9.))
+            .border_b_1()
+            .border_r_1()
     }
 }
 
@@ -1228,8 +1239,8 @@ fn corner_tick(top_left: bool) -> Div {
 fn press_bar(fill: u8, marks: &[(u8, Rgba)]) -> Div {
     div()
         .relative()
-        .h(px(22.))
-        .rounded(px(theme::RADIUS_SM))
+        .h(theme::sp(22.))
+        .rounded(theme::sp(theme::RADIUS_SM))
         .bg(theme::panel_1())
         .border_1()
         .border_color(theme::line())
@@ -1253,7 +1264,7 @@ fn press_bar(fill: u8, marks: &[(u8, Rgba)]) -> Div {
                 .top_0()
                 .bottom_0()
                 .left(relative(frac(v)))
-                .w(px(2.))
+                .w(theme::sp(2.))
                 .bg(color)
         }))
 }
@@ -1264,7 +1275,7 @@ fn press_readout(v: u8, mono: &SharedString) -> Div {
     div()
         .text_right()
         .font_family(mono.clone())
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::mute())
         .child(format!("{v} / 255 · {}%", pct100(v)))
 }
@@ -1272,7 +1283,7 @@ fn press_readout(v: u8, mono: &SharedString) -> Div {
 /// A field's caption, matching the widget kit's slider labels.
 fn field_label(label: &'static str) -> Div {
     div()
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::dim())
         .child(label)
 }
@@ -1280,13 +1291,13 @@ fn field_label(label: &'static str) -> Div {
 /// Quiet explanatory copy under a control.
 fn note(text: impl Into<SharedString>) -> Div {
     div()
-        .text_size(px(11.))
+        .text_size(theme::sp(11.))
         .text_color(theme::mute())
         .child(text.into())
 }
 
 fn divider() -> Div {
-    div().flex_none().h(px(1.)).bg(theme::line_soft())
+    div().flex_none().h(theme::sp(1.)).bg(theme::line_soft())
 }
 
 // --- Pure helpers ------------------------------------------------------------
@@ -1326,15 +1337,35 @@ fn slider_state(min: f32, max: f32, value: u8) -> SliderState {
 }
 
 /// Re-seed a slider in place. gpui-component's `min`/`max` are build-time only
-/// and the actuation slider's ceiling moves with the dual-step, so the whole
-/// state is replaced — the ENTITY, and with it every subscription on it,
-/// survives. Setting a value this way emits no `Change`, so a re-seed can't
-/// feed back into the handler that caused it.
+/// and the actuation slider's ceiling moves with the dual-step, so the state
+/// is rebuilt — the ENTITY, and with it every subscription on it, survives.
+/// Setting a value this way emits no `Change`, so a re-seed can't feed back
+/// into the handler that caused it.
+///
+/// Rebuilt THROUGH the builder methods on the previous state, not from
+/// `SliderState::new()`: the state privately caches its track bounds during
+/// paint, and a fresh state would zero that cache — the next frame then draws
+/// the thumb at `percentage * 0 = 0` (far left, no fill) until some later
+/// event forces another render. The builder path recomputes the thumb from
+/// the new min/max/value while the cached bounds survive.
 fn seed_slider(slider: &Entity<SliderState>, min: f32, max: f32, value: u8, cx: &mut App) {
     slider.update(cx, |state, cx| {
-        *state = slider_state(min, max, value);
+        let prev = std::mem::replace(state, SliderState::new());
+        *state = prev.min(min).max(max).step(1.).default_value(value as f32);
         cx.notify();
     });
+}
+
+/// One-frame render nudge after seeding never-painted sliders. The slider
+/// caches its track bounds during paint SILENTLY (no notify), so a slider's
+/// very first frame draws the thumb at x=0; a follow-up notify on the next
+/// tick lets the second frame position the thumb with the freshly cached
+/// bounds. Harmless when the bounds were already cached (one extra render).
+fn nudge_next_frame(cx: &mut Context<Calibration>) {
+    cx.spawn(async move |this, cx| {
+        let _ = this.update(cx, |_, cx| cx.notify());
+    })
+    .detach();
 }
 
 /// Every analog-calibratable cap: the 19 grid keys plus the spacebar. The thumb
