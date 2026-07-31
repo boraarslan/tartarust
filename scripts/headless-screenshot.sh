@@ -14,6 +14,12 @@
 #   HEADLESS_OUTPUT   output PNG path        (default: ./screenshots/ui.png)
 #   SETTLE_SECS       wait before screenshot (default: 3)
 #   CAGE_TIMEOUT      hard kill after N secs (default: 30)
+#   HEADLESS_WLR_RENDERER  compositor renderer (default: gles2)
+#       gles2 | vulkan = GPU renderer; advertises linux-dmabuf, which the
+#       GPUI/blade Vulkan client needs to present. Default since the GPUI
+#       migration (docs/GPUI_MIGRATION.md).
+#       pixman = pure software, shm clients only — kept for software-Vulkan
+#       clients (lavapipe) and the retired webkit/Dioxus path.
 #
 # Requires: cage, grim. Sources: docs/research/04-dioxus-and-headless.md
 set -euo pipefail
@@ -32,7 +38,7 @@ mkdir -p "$(dirname "$OUTPUT_PNG")"
 # --- wlroots: pure virtual, software-rendered (no GPU/DRM needed) ------------
 export WLR_BACKENDS=headless
 export WLR_HEADLESS_OUTPUTS=1
-export WLR_RENDERER=pixman
+export WLR_RENDERER="${HEADLESS_WLR_RENDERER:-gles2}"
 export WLR_RENDERER_ALLOW_SOFTWARE=1
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-noop}"   # no real seat in headless
 
@@ -86,7 +92,19 @@ SETTLE="$1"; shift
 APP_PID=$!
 
 sleep "$SETTLE"
-grim "$OUTPUT_FILE" && echo "[headless] screenshot saved: $OUTPUT_FILE"
+# First-present race: a capture can land before the client's first frame and
+# come out solid black. A solid-color 1280x720 PNG compresses to a few KB;
+# a real UI frame is far larger — retry while the capture looks empty.
+for attempt in 1 2 3 4 5; do
+    grim "$OUTPUT_FILE"
+    size=$(stat -c%s "$OUTPUT_FILE" 2>/dev/null || echo 0)
+    if [ "$size" -ge 10000 ]; then
+        break
+    fi
+    echo "[headless] capture $attempt looks empty (${size}B); retrying…"
+    sleep 2
+done
+echo "[headless] screenshot saved: $OUTPUT_FILE"
 
 kill "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true

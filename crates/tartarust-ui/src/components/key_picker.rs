@@ -1,206 +1,318 @@
 //! A reusable, searchable, category-grouped single-key picker.
 //!
-//! One trigger button opens a popover with a pinned search box and a scrollable,
-//! grouped list of every bindable key. It emits a single evdev name; chords are
-//! assembled by the consumer from several picks. Reused for Customize (each chord
-//! key + mouse/multimedia) and Macros (per step).
+//! A pinned search box over a scrollable, grouped list of every bindable key. It
+//! emits a single evdev name; chords are assembled by the consumer from several
+//! picks. Reused for Customize (each chord key + mouse/multimedia) and Macros
+//! (per step).
 //!
-//! The catalog is `&'static`, so nothing is cloned in the hot path: the filter is
-//! a `use_memo` that produces an ordered `Vec<usize>` of indices into the static
-//! [`search_index`] slice. Render and keyboard navigation both walk that single
-//! list, which keeps the highlighted row and the rendered row in lockstep.
+//! The catalog is `&'static`, so nothing is cloned in the hot path: the filter
+//! produces an ordered `Vec<usize>` of indices into the static [`search_index`]
+//! slice. Render and keyboard navigation both walk that single list, which keeps
+//! the highlighted row and the rendered row in lockstep.
+//!
+//! Unlike the Dioxus original this view is the PANEL only — it no longer owns
+//! the trigger button, the open flag, or the click-away backdrop. The parent
+//! creates it once with [`KeyPicker::new`], shows or hides it, and anchors it
+//! (the panel sets no position of its own); [`key_picker_trigger`] keeps every
+//! call site's trigger button identical. Picks come back as
+//! [`KeyPickerEvent`]s over a `cx.subscribe`, so a parent view handles them with
+//! `&mut Self` in hand instead of through a callback.
 
-use dioxus::prelude::*;
+use gpui::prelude::*;
+use gpui::{
+    AnyElement, App, ClickEvent, Context, Entity, EventEmitter, KeyDownEvent, SharedString, Window,
+    div, px,
+};
+use gpui_component::input::{Input, InputEvent, InputState};
 
-use crate::model::{key_label, search_index};
+use crate::model::{KeyEntry, key_label, search_index};
+use crate::theme;
 
-/// A searchable single-key picker. `value` is the current evdev name (may be
-/// empty); `on_pick` fires with the chosen evdev name. `placeholder` relabels
-/// the trigger button when `value` is empty (default "Choose key…"), so a
-/// caller can make the trigger read e.g. "+ Tap" directly.
-#[component]
-pub fn KeyPicker(
-    value: String,
-    on_pick: EventHandler<String>,
-    placeholder: Option<String>,
-) -> Element {
-    let mut open = use_signal(|| false);
-    let mut query = use_signal(String::new);
-    let mut highlighted = use_signal(|| 0usize);
+/// What the picker tells its parent.
+pub enum KeyPickerEvent {
+    /// A key was chosen; carries its canonical evdev name.
+    Picked(&'static str),
+    /// The picker wants to close without a pick (Escape). The parent owns the
+    /// open flag, so only it can actually close the panel.
+    Dismissed,
+}
 
-    // The static, catalog-ordered, pre-lowercased search rows. Filtering yields
-    // an ordered list of indices into this slice — one source of truth shared by
-    // the renderer and the keyboard handler, so highlight never drifts from the
-    // rows on screen. `Vec<usize>` (not `Vec<&KeyEntry>`) also keeps the memo
-    // independent of the catalog types' derives.
-    let filtered = use_memo(move || {
-        let rows = search_index();
-        let q = query().to_lowercase();
-        if q.is_empty() {
-            return (0..rows.len()).collect::<Vec<usize>>();
-        }
-        rows.iter()
-            .enumerate()
-            .filter(|(_, r)| r.0.contains(&q))
-            .map(|(i, _)| i)
-            .collect::<Vec<usize>>()
-    });
+pub struct KeyPicker {
+    /// The search box. Its `Change` events drive [`KeyPicker::refilter`].
+    search: Entity<InputState>,
+    /// Ordered indices into [`search_index`] that match the current query — one
+    /// source of truth shared by the renderer and the keyboard handler, so the
+    /// highlight never drifts from the rows on screen.
+    filtered: Vec<usize>,
+    /// Position within `filtered`, not within the catalog.
+    highlighted: usize,
+}
 
-    // A fresh filter invalidates the old highlight position; reset to the top.
-    use_effect(move || {
-        let _ = query.read();
-        highlighted.set(0);
-    });
+impl EventEmitter<KeyPickerEvent> for KeyPicker {}
 
-    let label = if value.is_empty() {
-        placeholder.unwrap_or_else(|| "Choose key…".to_string())
-    } else {
-        key_label(&value)
-    };
-
-    rsx! {
-        div { class: "key-picker",
-            button {
-                class: "kp-trigger",
-                r#type: "button",
-                onclick: move |_| {
-                    let next = !open();
-                    open.set(next);
-                    if next {
-                        query.set(String::new());
-                        highlighted.set(0);
-                    }
-                },
-                "{label}"
+impl KeyPicker {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search keys…"));
+        cx.subscribe(&search, |this, state, ev: &InputEvent, cx| match ev {
+            InputEvent::Change => {
+                let query = state.read(cx).value().to_string();
+                this.refilter(&query);
+                cx.notify();
             }
+            InputEvent::PressEnter { .. } => this.pick_highlighted(cx),
+            _ => {}
+        })
+        .detach();
 
-            if open() {
-                // Inline-styled backdrop (no dedicated CSS class in the spec): a
-                // fixed full-screen catcher under the panel that closes on click.
-                // Inline style matches the keypad.rs precedent.
-                div {
-                    style: "position:fixed;inset:0;z-index:50;",
-                    onclick: move |_| open.set(false),
-                }
-
-                div { class: "kp-panel",
-                    input {
-                        class: "kp-search",
-                        r#type: "text",
-                        autofocus: true,
-                        // Belt-and-suspenders: `autofocus` reliably fires on the
-                        // first open, but webviews (WebKitGTK here) may skip it on
-                        // re-mount, which would kill keyboard nav. Focus imperatively
-                        // on mount so every open lands the caret in the search box.
-                        onmounted: move |e| {
-                            spawn(async move {
-                                let _ = e.set_focus(true).await;
-                            });
-                        },
-                        placeholder: "Search keys…",
-                        value: "{query}",
-                        oninput: move |e| query.set(e.value()),
-                        onkeydown: move |e| {
-                            let len = filtered.peek().len();
-                            match e.key() {
-                                Key::Escape => {
-                                    e.prevent_default();
-                                    open.set(false);
-                                }
-                                Key::ArrowDown => {
-                                    e.prevent_default();
-                                    if len > 0 {
-                                        let h = (*highlighted.peek() + 1).min(len - 1);
-                                        highlighted.set(h);
-                                    }
-                                }
-                                Key::ArrowUp => {
-                                    e.prevent_default();
-                                    let h = highlighted.peek().saturating_sub(1);
-                                    highlighted.set(h);
-                                }
-                                Key::Enter => {
-                                    e.prevent_default();
-                                    let h = *highlighted.peek();
-                                    if let Some(&row) = filtered.peek().get(h) {
-                                        on_pick.call(search_index()[row].1.evdev.to_string());
-                                        open.set(false);
-                                    }
-                                }
-                                _ => {}
-                            }
-                        },
-                    }
-
-                    div { class: "kp-list",
-                        {
-                            let rows = search_index();
-                            let matched = filtered.read();
-                            if matched.is_empty() {
-                                rsx! { div { class: "kp-empty", "No keys match" } }
-                            } else {
-                                let hl = *highlighted.read();
-                                // Walk matched indices (catalog order). Open a new
-                                // group whenever the category changes; `flat` is the
-                                // running position used to match the highlight.
-                                // Comparing the head STRING is equivalent to comparing
-                                // categories (distinct categories have distinct heads
-                                // and rows are contiguous) and needs no enum derives.
-                                let mut prev_head: Option<&'static str> = None;
-                                let mut nodes: Vec<Element> = Vec::new();
-                                let mut group: Vec<Element> = Vec::new();
-                                let mut group_head = "";
-
-                                let flush = |nodes: &mut Vec<Element>, head: &str, group: &mut Vec<Element>| {
-                                    if group.is_empty() {
-                                        return;
-                                    }
-                                    let rows = std::mem::take(group);
-                                    let head = head.to_string();
-                                    nodes.push(rsx! {
-                                        div { class: "kp-group",
-                                            div { class: "kp-group-head", "{head}" }
-                                            {rows.into_iter()}
-                                        }
-                                    });
-                                };
-
-                                for (flat, &row) in matched.iter().enumerate() {
-                                    let r = &rows[row];
-                                    let head = r.2;
-                                    if prev_head != Some(head) {
-                                        flush(&mut nodes, group_head, &mut group);
-                                        group_head = head;
-                                        prev_head = Some(head);
-                                    }
-                                    let entry_cls = if flat == hl {
-                                        "kp-entry highlighted"
-                                    } else {
-                                        "kp-entry"
-                                    };
-                                    let label = r.1.label;
-                                    let evdev = r.1.evdev;
-                                    group.push(rsx! {
-                                        div {
-                                            class: "{entry_cls}",
-                                            onmouseenter: move |_| highlighted.set(flat),
-                                            onclick: move |_| {
-                                                on_pick.call(evdev.to_string());
-                                                open.set(false);
-                                            },
-                                            span { "{label}" }
-                                            span { class: "kp-raw", "{evdev}" }
-                                        }
-                                    });
-                                }
-                                flush(&mut nodes, group_head, &mut group);
-
-                                rsx! { {nodes.into_iter()} }
-                            }
-                        }
-                    }
-                }
-            }
+        Self {
+            search,
+            filtered: (0..search_index().len()).collect(),
+            highlighted: 0,
         }
     }
+
+    /// Re-arm the picker for a fresh open: clear the query, reset the highlight,
+    /// and put the caret in the search box. The parent calls this when it opens
+    /// the panel — the Dioxus version did the same work in its trigger's click
+    /// handler, which the parent now owns.
+    pub fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+            state.focus(window, cx);
+        });
+        self.refilter("");
+        cx.notify();
+    }
+
+    /// Recompute the match list for `query`. Was a `use_memo`; a plain method
+    /// now, called from the search box's `Change` event.
+    fn refilter(&mut self, query: &str) {
+        let rows = search_index();
+        let q = query.to_lowercase();
+        self.filtered = if q.is_empty() {
+            (0..rows.len()).collect()
+        } else {
+            rows.iter()
+                .enumerate()
+                .filter(|(_, r)| r.0.contains(&q))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        // A fresh filter invalidates the old highlight position; reset to the top.
+        self.highlighted = 0;
+    }
+
+    /// Emit the highlighted row, if the filter left anything to pick.
+    fn pick_highlighted(&mut self, cx: &mut Context<Self>) {
+        if let Some(&row) = self.filtered.get(self.highlighted) {
+            cx.emit(KeyPickerEvent::Picked(search_index()[row].1.evdev));
+        }
+    }
+
+    /// Move the highlight by one row, clamped at both ends.
+    fn move_highlight(&mut self, down: bool, cx: &mut Context<Self>) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        self.highlighted = if down {
+            (self.highlighted + 1).min(self.filtered.len() - 1)
+        } else {
+            self.highlighted.saturating_sub(1)
+        };
+        cx.notify();
+    }
+}
+
+impl Render for KeyPicker {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mono = theme::mono(cx);
+        let rows = search_index();
+        // Snapshot both so the row builders below can take `cx` without holding
+        // a borrow on `self`.
+        let filtered = self.filtered.clone();
+        let highlighted = self.highlighted;
+
+        let list = if filtered.is_empty() {
+            div()
+                .px(px(12.))
+                .py(px(22.))
+                .text_center()
+                .text_size(px(12.))
+                .text_color(theme::mute())
+                .child("No keys match")
+                .into_any_element()
+        } else {
+            // Walk matched indices (catalog order). Open a new group whenever the
+            // category changes; `flat` is the running position used to match the
+            // highlight. Comparing the head STRING is equivalent to comparing
+            // categories (distinct categories have distinct heads and rows are
+            // contiguous) and needs no enum derives.
+            let mut groups: Vec<AnyElement> = Vec::new();
+            let mut group: Vec<AnyElement> = Vec::new();
+            let mut group_head = "";
+
+            for (flat, &row) in filtered.iter().enumerate() {
+                let r = &rows[row];
+                if group_head != r.2 {
+                    flush_group(&mut groups, group_head, &mut group, &mono);
+                    group_head = r.2;
+                }
+                group.push(entry_row(flat, r.1, flat == highlighted, cx));
+            }
+            flush_group(&mut groups, group_head, &mut group, &mono);
+
+            div().children(groups).into_any_element()
+        };
+
+        div()
+            .w(px(280.))
+            .max_h(px(340.))
+            .flex()
+            .flex_col()
+            .rounded(px(theme::RADIUS))
+            .bg(theme::panel_1())
+            .border_1()
+            .border_color(theme::line())
+            .shadow_lg()
+            .overflow_hidden()
+            // Escape and the arrows ride the focused search box and bubble to
+            // here; Enter arrives as the input's own `PressEnter` event instead.
+            .on_key_down(cx.listener(
+                |this, e: &KeyDownEvent, _, cx| match e.keystroke.key.as_str() {
+                    "escape" => cx.emit(KeyPickerEvent::Dismissed),
+                    "down" => this.move_highlight(true, cx),
+                    "up" => this.move_highlight(false, cx),
+                    _ => {}
+                },
+            ))
+            .child(div().flex_none().m(px(8.)).child(Input::new(&self.search)))
+            .child(
+                div()
+                    .id("kp-list")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px(px(4.))
+                    .pb(px(6.))
+                    .child(list),
+            )
+    }
+}
+
+/// Close the running group into `groups`, if it has any rows. A no-op on an
+/// empty group, so the first category and the final flush share one path.
+fn flush_group(
+    groups: &mut Vec<AnyElement>,
+    head: &str,
+    group: &mut Vec<AnyElement>,
+    mono: &SharedString,
+) {
+    if group.is_empty() {
+        return;
+    }
+    let rows = std::mem::take(group);
+    groups.push(
+        div()
+            .pt(px(2.))
+            .child(
+                div()
+                    .px(px(9.))
+                    .pt(px(7.))
+                    .pb(px(5.))
+                    .bg(theme::panel_1())
+                    .font_family(mono.clone())
+                    .text_size(px(9.5))
+                    .text_color(theme::mute())
+                    .child(head.to_uppercase()),
+            )
+            .children(rows)
+            .into_any_element(),
+    );
+}
+
+/// One catalog row: the readable label, and the raw evdev name alongside it.
+/// `flat` is the row's position in the filtered list — the highlight's unit.
+fn entry_row(
+    flat: usize,
+    entry: &'static KeyEntry,
+    highlighted: bool,
+    cx: &mut Context<KeyPicker>,
+) -> AnyElement {
+    let evdev = entry.evdev;
+    div()
+        .id(("kp-entry", flat))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(10.))
+        .px(px(9.))
+        .py(px(7.))
+        .rounded(px(theme::RADIUS_SM))
+        .text_size(px(12.5))
+        .text_color(if highlighted {
+            theme::ink()
+        } else {
+            theme::dim()
+        })
+        .when(highlighted, |el| el.bg(theme::rust_wash()))
+        .hover(|s| s.bg(theme::panel_2()).text_color(theme::ink()))
+        .cursor_pointer()
+        // Pointing at a row moves the highlight, so mouse and keyboard never
+        // disagree about which row Enter would take.
+        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+            if *hovered && this.highlighted != flat {
+                this.highlighted = flat;
+                cx.notify();
+            }
+        }))
+        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+            cx.emit(KeyPickerEvent::Picked(evdev));
+        }))
+        .child(div().child(entry.label))
+        .child(
+            div()
+                .flex_none()
+                .text_size(px(10.5))
+                .text_color(theme::mute())
+                .child(evdev),
+        )
+        .into_any_element()
+}
+
+/// The picker's trigger button. The parent owns the open flag now, so it owns
+/// the trigger too — this keeps every call site's button identical. `value` is
+/// the current evdev name (may be empty); `placeholder` relabels the button
+/// while `value` is empty (default "Choose key…"), so a caller can make the
+/// trigger read e.g. "+ Tap" directly.
+pub fn key_picker_trigger(
+    id: impl Into<gpui::ElementId>,
+    value: &str,
+    placeholder: Option<&str>,
+    mono: SharedString,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = if value.is_empty() {
+        placeholder.unwrap_or("Choose key…").to_string()
+    } else {
+        key_label(value)
+    };
+    div()
+        .id(id)
+        .flex()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(px(8.))
+        .px(px(11.))
+        .py(px(9.))
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::panel_1())
+        .border_1()
+        .border_color(theme::line())
+        .font_family(mono)
+        .text_size(px(12.5))
+        .text_color(theme::ink())
+        .hover(|s| s.bg(theme::panel_2()).border_color(theme::mute()))
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(label)
 }

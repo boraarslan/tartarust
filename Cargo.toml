@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+# spike/ holds throwaway GPUI validation crates (docs/GPUI_MIGRATION.md Phase 0)
+# with their own lockfiles — deliberately outside the workspace.
+exclude = ["spike"]
 members = [
     "crates/tartarust-protocol",
     "crates/tartarust-hid",
